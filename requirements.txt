@@ -1,0 +1,14 @@
+astropy
+astroquery
+google-genai
+h5py
+matplotlib
+numpy
+openai
+pandas
+Pillow
+pydantic
+pyvo
+requests
+scikit-learn
+tqdm

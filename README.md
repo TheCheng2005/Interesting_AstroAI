@@ -53,6 +53,15 @@ datasets, see the source papers:
   *Astronomy & Astrophysics*, 704, A227.
   https://doi.org/10.1051/0004-6361/202555512
 
+## Setup
+
+```
+pip install -r requirements.txt
+```
+
+Scripts that call Gemini expect a `JB_API_KEY` environment variable; scripts
+that call Qwen via OpenRouter expect `OPENROUTER_API_KEY`.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
