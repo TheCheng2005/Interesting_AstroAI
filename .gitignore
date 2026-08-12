@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.bak
+*.log
+*.done
+
+# API/scratch caches (regenerable, not results)
+ads_abstract_cache.json
+hf_cache/
+ned_checkpoint.csv
+ned_biblio_checkpoint.csv
