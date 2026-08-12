@@ -32,6 +32,7 @@ Across both datasets, the same family of AI-judging protocols is compared:
   (cosmic rays, diffraction spikes, satellite trails, etc.).
 
 Both Gemini and Qwen are evaluated under each protocol.
+<img width="2200" height="2400" alt="poster_method_diagram_icons" src="https://github.com/user-attachments/assets/d73399eb-8573-42e6-9725-851d4302952f" />
 
 ## Data
 
