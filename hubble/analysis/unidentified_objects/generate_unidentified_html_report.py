@@ -52,26 +52,41 @@ import h5py
 from PIL import Image
 
 
-# ── 1. CONFIGURATION ───────────────────────────────────────────────────────
+# The stage folders are siblings, so put the analysis root on the path to
+# reach common/paths.py (see its docstring).
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+from common.paths import (
+    UNIDENTIFIED_CSV as DEFAULT_UNIDENTIFIED_CSV,
+    UNIDENTIFIED_REPORT_HTML,
+    MATCHED_CSV,
+    SIMBAD_BIBLIOGRAPHY_CSV,
+    NED_BIBLIOGRAPHY_CSV,
+    DEEP_DIVE_JSON,
+    CLASSIFICATION_CSV,
+    HDF5_PATH as DEFAULT_HDF5_PATH,
+)
+
+
+# ── 1. CONFIGURATION ───────────────────────────────────────────────────────
 
 UNIDENTIFIED_CSV = (
     sys.argv[1]
     if len(sys.argv) > 1
-    else os.path.join(SCRIPT_DIR, "unidentified_objects.csv")
+    else DEFAULT_UNIDENTIFIED_CSV
 )
 
 HDF5_PATH = (
     sys.argv[2]
     if len(sys.argv) > 2
-    else "../hubble_data/10m_dedup_hsc_acs_wfc_f814w_0000_minsep10p0arcsec.hdf5"
+    else DEFAULT_HDF5_PATH
 )
 
 OUTPUT_HTML = (
     sys.argv[3]
     if len(sys.argv) > 3
-    else "unidentified_objects_report.html"
+    else UNIDENTIFIED_REPORT_HTML
 )
 
 MAX_CARDS = (
@@ -89,31 +104,31 @@ MAX_JPEG_IMAGES = (
 MATCHED_CSV = (
     sys.argv[6]
     if len(sys.argv) > 6
-    else os.path.join(SCRIPT_DIR, "matched_objects.csv")
+    else MATCHED_CSV
 )
 
 SIMBAD_BIBLIOGRAPHY_CSV = (
     sys.argv[7]
     if len(sys.argv) > 7
-    else os.path.join(SCRIPT_DIR, "simbad_bibliography.csv")
+    else SIMBAD_BIBLIOGRAPHY_CSV
 )
 
 NED_BIBLIOGRAPHY_CSV = (
     sys.argv[8]
     if len(sys.argv) > 8
-    else os.path.join(SCRIPT_DIR, "ned_bibliography.csv")
+    else NED_BIBLIOGRAPHY_CSV
 )
 
 DEEP_DIVE_JSON = (
     sys.argv[9]
     if len(sys.argv) > 9
-    else os.path.join(SCRIPT_DIR, "deep_dive_summaries.json")
+    else DEEP_DIVE_JSON
 )
 
 DISCUSSION_CLASSIFICATION_CSV = (
     sys.argv[10]
     if len(sys.argv) > 10
-    else os.path.join(SCRIPT_DIR, "discussion_classification.csv")
+    else CLASSIFICATION_CSV
 )
 
 

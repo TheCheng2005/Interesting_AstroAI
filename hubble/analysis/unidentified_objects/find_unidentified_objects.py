@@ -80,10 +80,24 @@ import astropy.units as u
 from astroquery.ipac.ned import Ned
 
 
-# ── CONFIGURATION ───────────────────────────────────────────────────────────
+# The stage folders are siblings, so put the analysis root on the path to
+# reach common/paths.py (see its docstring).
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-SUBSET_DIR = os.path.join(SCRIPT_DIR, "subset_test")
+from common.paths import (
+    SUBSET_DIR,
+    HF_CACHE_DIR,
+    UNIDENTIFIED_CSV,
+    MATCHED_CSV,
+    SIMBAD_BIBLIOGRAPHY_CSV,
+    NED_BIBLIOGRAPHY_CSV,
+    NED_CHECKPOINT_CSV,
+    NED_BIBLIO_CHECKPOINT_CSV,
+)
+
+
+# ── CONFIGURATION ───────────────────────────────────────────────────────────
 
 LIKERT_RUN_FILES = [
     os.path.join(SUBSET_DIR, "gemini_likert_1.csv"),
@@ -91,7 +105,6 @@ LIKERT_RUN_FILES = [
     os.path.join(SUBSET_DIR, "gemini_likert_3.csv"),
 ]
 
-HF_CACHE_DIR = os.path.join(SCRIPT_DIR, "hf_cache")
 HF_RESOLVE_BASE = (
     "https://huggingface.co/datasets/astronolan/galaxy-mentions/resolve/"
     "refs%2Fconvert%2Fparquet"
@@ -112,15 +125,10 @@ NED_TOP_N = None  # None = check every HF+SIMBAD survivor (not just a top-scorin
 NED_WORKERS = 8  # polite concurrency for NED's public per-object TAP service
 NED_BIBLIO_WORKERS = 5  # concurrency for NED's classic (non-TAP) references endpoint
 
-OUTPUT_CSV = os.path.join(SCRIPT_DIR, "unidentified_objects.csv")
-MATCHED_CSV = os.path.join(SCRIPT_DIR, "matched_objects.csv")
-SIMBAD_BIBLIOGRAPHY_CSV = os.path.join(SCRIPT_DIR, "simbad_bibliography.csv")
-NED_BIBLIOGRAPHY_CSV = os.path.join(SCRIPT_DIR, "ned_bibliography.csv")
+OUTPUT_CSV = UNIDENTIFIED_CSV
 
 # Checkpoint files so a multi-hour NED run can be interrupted and resumed
 # without re-querying objects already checked.
-NED_CHECKPOINT_CSV = os.path.join(SCRIPT_DIR, "ned_checkpoint.csv")
-NED_BIBLIO_CHECKPOINT_CSV = os.path.join(SCRIPT_DIR, "ned_biblio_checkpoint.csv")
 
 
 # ── 1. LOAD AND AVERAGE OUR GEMINI LIKERT SCORES ────────────────────────────

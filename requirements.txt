@@ -8,6 +8,7 @@ openai
 pandas
 Pillow
 pydantic
+pyarrow
 pyvo
 requests
 scikit-learn

@@ -52,7 +52,6 @@ from google import genai
 from google.genai import types
 
 from deep_dive_summaries import (
-    SCRIPT_DIR,
     MATCHED_CSV,
     SIMBAD_BIBLIOGRAPHY_CSV,
     NED_BIBLIOGRAPHY_CSV,
@@ -64,13 +63,19 @@ from deep_dive_summaries import (
 )
 
 
+# The stage folders are siblings, so put the analysis root on the path to
+# reach common/paths.py (see its docstring).
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from common.paths import CLASSIFICATION_CSV
+
 # ── CONFIGURATION ───────────────────────────────────────────────────────────
 
 PAPERS_SOFT_CAP = 40  # cap on papers fed to the LLM per object (name-hits always included)
 GEMINI_MODEL = "gemini-3.1-flash-lite"
 GEMINI_WORKERS = 20
 
-CLASSIFICATION_CSV = os.path.join(SCRIPT_DIR, "discussion_classification.csv")
 CLASSIFICATION_FIELDNAMES = ["object_name", "n_papers_checked", "n_name_hits", "genuinely_discussed", "reasoning"]
 
 
@@ -218,7 +223,14 @@ classification_config = types.GenerateContentConfig(
         "genuinely, individually discusses this object - e.g. a dedicated study, "
         "specific measurements attributed to it, or a description of a notable "
         "feature - versus the object merely being one of many members in a sample, "
-        "survey, or catalog table with no individual discussion. Judge "
+        "survey, or catalog table with no individual discussion. Some papers also "
+        "carry IN-BODY CONTEXT: short verbatim excerpts of the paper's own body "
+        "text surrounding each mention of the object. Weigh these above the "
+        "abstract, since they show how the object is actually used - a name sitting "
+        "in a comma-separated list, a table row, or a coordinate column indicates "
+        "mere catalog membership, whereas a sentence attributing a morphology, a "
+        "measurement, or a behaviour to the object indicates genuine discussion. "
+        "Judge "
         "conservatively: an abstract that just says the paper studies 'a sample of "
         "N objects including this one' does NOT count as genuine discussion unless "
         "the object itself is specifically called out with its own findings."
@@ -242,6 +254,18 @@ def build_prompt(object_name, papers, hit_bibcodes):
             else ""
         )
         lines.append(f"\n[{p['year']}]{hit_note} {p.get('_title') or p['title']}\n{abstract}")
+
+        snippets = (p.get("_snippets") or "").strip()
+        if snippets:
+            lines.append(f"IN-BODY CONTEXT: {snippets}")
+        elif p["bibcode"] in hit_bibcodes:
+            # A hit with no snippet usually means the mention sits beyond the
+            # highlighted window, not that there is no mention. Say so, rather
+            # than letting its absence read as evidence against discussion.
+            lines.append(
+                "IN-BODY CONTEXT: unavailable - the name matches this paper's full text "
+                "but no surrounding excerpt could be retrieved; judge it on the abstract."
+            )
     return "\n".join(lines)
 
 

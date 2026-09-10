@@ -20,6 +20,7 @@ Usage:
 """
 
 import csv
+import os
 import sys
 
 import numpy as np
@@ -27,14 +28,21 @@ import pandas as pd
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 
+# The stage folders are siblings, so put the analysis root on the path to
+# reach common/paths.py (see its docstring).
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from common.paths import FULL_RUN_DIR, INTERESTING_CSV_PATH
+
 
 RESULTS_CSV = (
     sys.argv[1] if len(sys.argv) > 1
-    else "hsc_grid_results_score_mixed_qwen_07-15_10.csv"
+    else os.path.join(FULL_RUN_DIR, "10M_10arc_dedup_centered.csv")
 )
 INTERESTING_CSV = (
     sys.argv[2] if len(sys.argv) > 2
-    else "../hubble_data/Interesting.csv"
+    else INTERESTING_CSV_PATH
 )
 OUTPUT_CSV = (
     sys.argv[3] if len(sys.argv) > 3
@@ -49,7 +57,14 @@ NEW_RADIUS_ARCSEC = 3.0
 
 with open(RESULTS_CSV, newline="", encoding="utf-8") as f:
     reader = csv.DictReader(f)
-    rows = list(reader)
+    rows = [
+        row for row in reader
+        # Subset runs append '# TOKEN USAGE SUMMARY' rows, which carry no
+        # coordinates - skip them rather than crashing on float(None).
+        if not str(row.get("index", "")).lstrip().startswith("#")
+        and (row.get("SourceRA") or "").strip()
+        and (row.get("SourceDec") or "").strip()
+    ]
 
 print(f"Loaded {len(rows)} rows from {RESULTS_CSV}")
 

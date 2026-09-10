@@ -4,8 +4,17 @@ __pycache__/
 *.log
 *.done
 
-# API/scratch caches (regenerable, not results)
+# Rebuildable or resumable state, never results: ADS abstract cache, HF parquet
+# downloads, NED resume checkpoints, run logs.
+cache/
 ads_abstract_cache.json
 hf_cache/
 ned_checkpoint.csv
 ned_biblio_checkpoint.csv
+
+# Secrets: the ADS token lives at ~/.ads_api_key, JB_API_KEY in the environment.
+.ads_api_key
+*.env
+
+# Image catalogue is distributed separately - see hubble/analysis/README.md
+*.hdf5

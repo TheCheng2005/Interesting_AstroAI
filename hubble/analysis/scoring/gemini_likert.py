@@ -41,11 +41,23 @@ from pydantic import BaseModel, Field
 from PIL import Image, ImageDraw, ImageFont
 
 
+# The stage folders are siblings, so put the analysis root on the path to
+# reach common/paths.py (see its docstring).
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from common.paths import (
+    HDF5_PATH,
+    INTERESTING_CSV_PATH,
+    PARQUET_PATH,
+    SUBSET_DIR,
+    FULL_RUN_DIR,
+    GEMINI_MD_PATH,
+)
+
+
 # ── 1. CONFIGURATION ───────────────────────────────────────────────────────
 
-HDF5_PATH = "../hubble_data/10m_dedup_hsc_acs_wfc_f814w_0000_minsep10p0arcsec.hdf5"
-INTERESTING_CSV_PATH = "../hubble_data/Interesting.csv"
-PARQUET_PATH = "../hubble_data/10m_dedup_hsc_acs_wfc_f814w_0000_minsep10p0arcsec.parquet"
 
 NUM_CORES = 25
 ROUNDS_PER_IMAGE = 10
@@ -63,7 +75,6 @@ TEST_NUM_IMAGES = 20000  # Number of images in the test subset
 
 # All test-subset result CSVs land here, named {provider}_{format}_{run}.csv so
 # the dashboard groups replicates by (provider, format) automatically.
-SUBSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "subset_test")
 
 
 def results_filename(run_idx, seed):
@@ -72,7 +83,7 @@ def results_filename(run_idx, seed):
     if TEST_MODE:
         os.makedirs(SUBSET_DIR, exist_ok=True)
         return os.path.join(SUBSET_DIR, f"gemini_likert_{run_idx}.csv")
-    return "10M_10arcsec_dedup_seed{}_{}.csv".format(seed, time.strftime("%m-%d_%H"))
+    return os.path.join(FULL_RUN_DIR, "10M_10arcsec_dedup_seed{}_{}.csv".format(seed, time.strftime("%m-%d_%H")))
 
 
 class SelectedImage(BaseModel):
@@ -95,8 +106,8 @@ class SelectedImage(BaseModel):
 
 
 few_shot_context = ""
-if os.path.exists("GEMINI.md"):
-    with open("GEMINI.md", "r", encoding="utf-8") as f:
+if os.path.exists(GEMINI_MD_PATH):
+    with open(GEMINI_MD_PATH, "r", encoding="utf-8") as f:
         few_shot_context = f"\n\n{f.read()}"
 
 
@@ -314,7 +325,6 @@ def prepare_run_records(all_records, random_seed):
 
 
 # ── 3. GRID UTILITIES ──────────────────────────────────────────────────────
-
 def create_grid(image_records):
     """
     Stitches 16 image records into a 4x4 grid with borders and labels.

@@ -47,11 +47,22 @@ from pydantic import BaseModel, Field
 from PIL import Image, ImageDraw, ImageFont
 
 
+# The stage folders are siblings, so put the analysis root on the path to
+# reach common/paths.py (see its docstring).
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from common.paths import (
+    HDF5_PATH,
+    INTERESTING_CSV_PATH,
+    PARQUET_PATH,
+    SUBSET_DIR,
+    FULL_RUN_DIR,
+)
+
+
 # ── 1. CONFIGURATION ───────────────────────────────────────────────────────
 
-HDF5_PATH = "../hubble_data/10m_dedup_hsc_acs_wfc_f814w_0000_minsep10p0arcsec.hdf5"
-INTERESTING_CSV_PATH = "../hubble_data/Interesting.csv"
-PARQUET_PATH = "../hubble_data/10m_dedup_hsc_acs_wfc_f814w_0000_minsep10p0arcsec.parquet"
 
 OPENROUTER_MODEL = "qwen/qwen3.5-397b-a17b"
 
@@ -71,7 +82,6 @@ TEST_NUM_IMAGES = 20000  # Number of images in the test subset
 
 # All test-subset result CSVs land here, named {provider}_{format}_{run}.csv so
 # the dashboard groups replicates by (provider, format) automatically.
-SUBSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "subset_test")
 
 
 def results_filename(run_idx, seed):
@@ -80,7 +90,7 @@ def results_filename(run_idx, seed):
     if TEST_MODE:
         os.makedirs(SUBSET_DIR, exist_ok=True)
         return os.path.join(SUBSET_DIR, f"qwen_single_elim_{run_idx}.csv")
-    return "qwen_single_elim_seed{}_{}.csv".format(seed, time.strftime("%m-%d_%H"))
+    return os.path.join(FULL_RUN_DIR, "qwen_single_elim_seed{}_{}.csv".format(seed, time.strftime("%m-%d_%H")))
 
 
 class SelectedWinner(BaseModel):

@@ -38,24 +38,36 @@ import h5py
 from PIL import Image
 
 
+# The stage folders are siblings, so put the analysis root on the path to
+# reach common/paths.py (see its docstring).
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from common.paths import (
+    SUBSET_DIR,
+    SCORING_REPORT_HTML,
+    HDF5_PATH as DEFAULT_HDF5_PATH,
+)
+
+
 # ── 1. CONFIGURATION ───────────────────────────────────────────────────────
 
 CLASSIFICATION_CSV = (
     sys.argv[1]
     if len(sys.argv) > 1
-    else "gemini_likert_1.csv"
+    else os.path.join(SUBSET_DIR, "gemini_likert_1.csv")
 )
 
 HDF5_PATH = (
     sys.argv[2]
     if len(sys.argv) > 2
-    else "../hubble_data/10m_dedup_hsc_acs_wfc_f814w_0000_minsep10p0arcsec.hdf5"
+    else DEFAULT_HDF5_PATH
 )
 
 OUTPUT_HTML = (
     sys.argv[3]
     if len(sys.argv) > 3
-    else "hsc_report_mixed.html"
+    else SCORING_REPORT_HTML
 )
 
 MAX_CARDS = (

@@ -80,19 +80,27 @@ try:
 except ImportError:
     HDF5_LIBS = False
 
+# The stage folders are siblings, so put the analysis root on the path to
+# reach common/paths.py (see its docstring).
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from common.paths import (
+    SUBSET_DIR,
+    PLOTS_ONLY_HTML,
+    HDF5_PATH as DEFAULT_HDF5_PATH,
+)
+
+
 # ── 1. CONFIGURATION ────────────────────────────────────────────────────────
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-AI_CSV_DIR = sys.argv[1] if len(sys.argv) > 1 else os.path.join(SCRIPT_DIR, "subset_test")
-OUTPUT_HTML = os.path.join(SCRIPT_DIR, "plots_only.html")
+AI_CSV_DIR = sys.argv[1] if len(sys.argv) > 1 else SUBSET_DIR
+OUTPUT_HTML = PLOTS_ONLY_HTML
 
 AI_FILE_PATTERN = "*.csv"
 TOP_N = 100  # Default N for the interactive Recall@N chart and the provider cards.
 
 # Bottom-of-page image gallery: top-N images per run, embedded from the HDF5.
-HDF5_PATH = sys.argv[2] if len(sys.argv) > 2 else os.path.join(
-    SCRIPT_DIR, "..", "hubble_data",
-    "10m_dedup_hsc_acs_wfc_f814w_0000_minsep10p0arcsec.hdf5",
-)
+HDF5_PATH = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_HDF5_PATH
 GALLERY_TOP_N = 20   # how many top-scored images to show per run
 GALLERY_THUMB_PX = 180  # thumbnail max edge (keeps the embedded HTML small)
 GALLERY_JPEG_QUALITY = 80
