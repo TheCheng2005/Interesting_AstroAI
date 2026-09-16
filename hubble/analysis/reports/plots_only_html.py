@@ -47,7 +47,7 @@ Recall@N
 
 Pricing (USD per 1M tokens):
     Gemini (Google): $0.25 input   /  $1.50 output
-    Qwen           : $0.45 input   /  $3.00 output
+    Qwen           : $0.39 input   /  $2.34 output
 
 Token usage:
     - Every CSV carries a footer block (# TotalInputTokens /
@@ -105,10 +105,12 @@ GALLERY_TOP_N = 20   # how many top-scored images to show per run
 GALLERY_THUMB_PX = 180  # thumbnail max edge (keeps the embedded HTML small)
 GALLERY_JPEG_QUALITY = 80
 
-# Cost model: USD per 1,000,000 tokens, keyed by provider.
+# Cost model: USD per 1,000,000 tokens, keyed by provider. These must stay in
+# step with the prices quoted in the paper's cost table - every $/1k figure in
+# both is derived from them.
 PRICING = {
     "gemini": {"input": 0.25, "output": 1.50},
-    "qwen":   {"input": 0.45, "output": 3.00},
+    "qwen":   {"input": 0.39, "output": 2.34},
 }
 
 # One brand color per provider for the head-to-head summary.

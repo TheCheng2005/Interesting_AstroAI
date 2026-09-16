@@ -1,0 +1,21 @@
+# This package is code only. Everything below is an input or a result that
+# lands here when a stage is run with PAPER_RESULTS_DIR unset.
+results/
+cache/
+data/
+
+# Stage outputs land beside the code that writes them, so ignore the data
+# files by extension rather than the directories, which hold source.
+unidentified_objects/*.csv
+unidentified_objects/*.json
+literature_crossmatch/*.csv
+literature_crossmatch/*.json
+literature_crossmatch/*.txt
+
+__pycache__/
+*.pyc
+
+# dataset/pipeline.py scratch and credentials
+work/
+output/
+.env
