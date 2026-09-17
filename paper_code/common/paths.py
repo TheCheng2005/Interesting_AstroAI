@@ -8,9 +8,10 @@ runs correctly from anywhere. Layout (this file sits in common/):
         common/                 this module, shared by every stage
         dataset/                stage 0 - build the cutout catalogue
         scoring/                stage 1 - the VLM scoring protocols
-        unidentified_objects/   stage 2 - catalogue cross-match, and the
-                                released candidate catalogue built on it
-        literature_crossmatch/  the genuine-discussion helpers stage 2b uses
+        unidentified_objects/   stage 2A - find the papers a catalogue
+                                attributes to each position, and stage 2B -
+                                judge whether any of them discuss the object
+        literature_crossmatch/  the ADS and classifier helpers 2B uses
         metrics/                stage 3 - the numbers printed in the paper
 
 Because the stage folders are siblings, a script imports this module with:
@@ -102,7 +103,8 @@ UNDISCUSSED_CATALOG_CSV = os.path.join(UNIDENTIFIED_DIR, "undiscussed_catalog.cs
 CANDIDATES_ALL_CSV = os.path.join(UNIDENTIFIED_DIR, "all_nonreference_above_threshold.csv")
 CANDIDATES_COUNTS_JSON = os.path.join(UNIDENTIFIED_DIR, "candidate_counts.json")
 
-# Written by stage 2, but read by the metrics, so they live together.
+# Written by a standalone stage-2A sweep, and read by its own corpus-wide
+# tools, so they live together.
 LITERATURE_DIR = os.path.join(RESULTS_ROOT, "literature_crossmatch")
 MATCHED_CSV = os.path.join(LITERATURE_DIR, "matched_objects.csv")
 SIMBAD_BIBLIOGRAPHY_CSV = os.path.join(LITERATURE_DIR, "simbad_bibliography.csv")

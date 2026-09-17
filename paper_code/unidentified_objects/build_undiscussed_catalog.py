@@ -2,6 +2,12 @@
 Build the released candidate catalogue: high-scoring cutouts that are not
 reference anomalies and that nobody has written about individually.
 
+This is stage 2B, and it runs stage 2A itself - it imports
+find_unidentified_objects and calls its cross-match and bibliography
+functions on the candidate shortlist, so there is no separate 2A run to do
+first. 2A answers "which papers mention an object at this position"; 2B
+answers "does any of them actually say something about it".
+
 Four conditions, applied in order, then a screening pass:
 
   1. imagescore >= MIN_SCORE in the scoring CSV (45, the released cut).
@@ -9,7 +15,9 @@ Four conditions, applied in order, then a screening pass:
      (those are already known, and are the labelled positives of stage 1).
   3. No counterpart within MATCH_RADIUS_ARCSEC in the HF galaxy-mentions
      coordinate catalogue. A hit there means a paper already resolved a name
-     to this position, so the object is discussed by construction.
+     to this position, so the object is discussed by construction. SIMBAD and
+     NED are queried in the same pass, but only to collect each matched
+     object's bibliography - that list is what condition 4 reads.
   4. No SIMBAD or NED object matched to the image is *genuinely discussed* in
      the literature.
 

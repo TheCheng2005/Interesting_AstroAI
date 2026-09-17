@@ -30,14 +30,16 @@ reasoning disabled. Two methods × two models is the four runs of Table 1.
   └─────────┬──────────┘  → results/subset_test/*.csv
             │                needs stage 0 + an API key; bills real tokens
   ┌─────────▼──────────┐
-  │ 2  unidentified_   │  find_unidentified_objects.py
-  │    objects/        │  HF galaxy-mentions → SIMBAD → NED, 3"
-  └─────────┬──────────┘  → unidentified_objects.csv,
-            │                literature_crossmatch/matched_objects.csv
-            │                public services only, no key, ~6 min
-  ├─────────▼──────────┐
-  │ 2b unidentified_   │  build_undiscussed_catalog.py
-  │    objects/        │  ADS abstracts + in-body snippets -> Gemini verdict,
+  │ 2A unidentified_   │  find_unidentified_objects.py
+  │    objects/        │  FIND THE PAPERS: 3" match against HF galaxy-
+  │                    │  mentions, SIMBAD and NED, and pull the
+  │                    │  bibliography each one attributes to the object
+  └─────────┬──────────┘
+            │  every paper that cites an object at this position
+  ┌─────────▼──────────┐
+  │ 2B unidentified_   │  build_undiscussed_catalog.py
+  │    objects/        │  JUDGE THE PAPERS: do any actually discuss it?
+  │                    │  abstracts + in-body snippets -> Gemini verdict,
   │                    │  then the O'Ryan et al. (2023) screening flags
   └─────────┬──────────┘  → undiscussed_catalog.csv, candidate_counts.json
             │                needs an ADS token + GEMINI_API_KEY
@@ -46,10 +48,11 @@ reasoning disabled. Two methods × two models is the four runs of Table 1.
   └────────────────────┘  → the published numbers, stdlib only, seconds
 ```
 
-Stage 2b builds the released candidate list; stage 3 recomputes the
-performance tables. The two are independent of each other.
+2A finds the papers, 2B reads them. **One command runs both** —
+`build_undiscussed_catalog.py` calls 2A's cross-match code directly, so there
+is no separate 2A run to do first. Stage 3 is independent of either.
 
-Stages 2 and 3 never touch the image catalogue. **If you only want to check
+Stage 2 and stage 3 never touch the image catalogue. **If you only want to check
 the published numbers, skip to step 3 below** — it takes seconds and needs no
 key, no download and no install.
 
@@ -153,24 +156,55 @@ thinking at the output rate — `# TotalThinkingTokens`. A Qwen run should
 record `# TotalCostUSD`, the charge OpenRouter actually applied, which is
 what the paper quotes rather than a token-price estimate.
 
-## Step 2 — the positional cross-match
+## Step 2 — from scores to a screened catalogue
+
+This stage answers two different questions, and it helps to keep them apart:
+
+- **2A — which papers even mention this position?** Cross-match the image
+  against sky catalogues, and collect the bibliography each catalogue
+  attributes to whatever object it finds there.
+- **2B — do any of those papers actually *say something* about the object?**
+  Read them and decide, because a catalogue entry is not a discussion.
+
+**One command runs both.** `build_undiscussed_catalog.py` calls 2A's
+cross-match functions itself; you do not run 2A first. It is split out below
+only because the two halves answer different questions, and because 2A is
+also runnable on its own for a different purpose.
+
+### Step 2A — find the papers
+
+The code lives in `unidentified_objects/find_unidentified_objects.py`. For
+each image it searches a 3″ circle around the position, in three catalogues:
+
+| Catalogue | What a hit means | What it yields |
+|---|---|---|
+| HF `astronolan/galaxy-mentions` | a paper already resolved a name to this position | the mention itself |
+| SIMBAD (bulk TAP upload) | SIMBAD records an object here | `main_id`, object type, and **every paper SIMBAD links to it** |
+| NED (one object at a time) | NED records an object here | name, type, redshift, and **its reference list** |
+
+The SIMBAD and NED bibliographies are the point: they are how an image gets
+from "there is an object at these coordinates" to "here are the 40 papers
+that cite it". That list is the evidence 2B then judges.
+
+Two choices worth knowing. Both SIMBAD and NED are queried for **every**
+image rather than stopping at the first catalogue that answers — stopping
+early would leave SIMBAD-matched images with no NED bibliography, understating
+the literature on exactly the objects most likely to have some. And one image
+can resolve to several catalogue objects within 3″ (an optical and a radio
+designation for one source), so all of their papers are pooled.
+
+Running it standalone is optional and does something different:
 
 ```bash
 export PAPER_RESULTS_DIR=/path/to/analysis   # where step 1's CSVs live
 python unidentified_objects/find_unidentified_objects.py
 ```
 
-Cross-matches every scored position at 3″ against Hugging Face
-`astronolan/galaxy-mentions`, then SIMBAD by bulk TAP upload, then NED one
-object at a time, writing `unidentified_objects.csv`,
-`literature_crossmatch/matched_objects.csv` and the two bibliographies. No
-key; the NED pass checkpoints and resumes, so it is safe to interrupt.
-
-This module is also the cross-match **library** that step 2b imports — its
-`cross_match_hf`, `cross_match_simbad`, `cross_match_ned` and bibliography
-fetchers are what collect the papers that the discussion screen judges. Run it
-standalone only if you want the corpus-wide matched/unmatched split; the
-candidate pipeline calls into it directly.
+That sweeps the **whole scored corpus** instead of the candidate shortlist,
+writing `unidentified_objects.csv`, `literature_crossmatch/matched_objects.csv`
+and the two bibliographies — useful for a corpus-wide matched/unmatched split,
+but not needed for any number in the current paper. No key; the NED pass
+checkpoints and resumes, so it is safe to interrupt.
 
 **SIMBAD and NED are live.** Re-running returns slightly fewer unmatched
 images than an earlier run as positions get catalogued over time — a re-run
@@ -178,13 +212,12 @@ six weeks on moved one corpus-wide count by 23 images out of 25,702 and left
 the candidate shortlist unchanged. Quote the query date alongside any count
 taken from it.
 
-## Step 2b — build the released candidate catalogue
+### Step 2B — judge whether those papers discuss the object
 
-Positional cross-matching answers "does a catalogue record this position". It
-does not answer "has anyone actually looked at it" — an object can sit in
-SIMBAD as row 400 of a survey table with no paper ever saying a word about it.
-This stage asks the second question, then records the interacting-galaxy
-context, and writes the released list.
+2A hands over a pile of papers per object. The question here is whether any of
+them says something about *that* object, or whether it only appears as row 400
+of a survey table. Being catalogued is fine; being discussed is not. This is
+the step you actually run:
 
 ```bash
 export PAPER_RESULTS_DIR=/path/to/analysis
@@ -286,9 +319,9 @@ names any run it could not find rather than quietly omitting the row.
 | Table 1 — N selected, recall, precision, Expected Recall@2000, $/10k | `metrics/make_table1.py` |
 | Table 2 — tokens/image and $/10,000 images | `metrics/make_table1.py` |
 | Discussion — seed-to-seed recall spread | `metrics/make_table1.py` |
-| the positional 3″ cross-match | `unidentified_objects/find_unidentified_objects.py` |
-| the released catalogue, 138 → 131, with O'Ryan flags | `unidentified_objects/build_undiscussed_catalog.py` |
-| its genuine-discussion machinery | `literature_crossmatch/{classify_genuine_discussion,fulltext_search_classification,deep_dive_summaries}.py` |
+| 2A — finding the papers a catalogue attributes to each position | `unidentified_objects/find_unidentified_objects.py` |
+| 2B — the released catalogue, 138 → 131, with O'Ryan flags | `unidentified_objects/build_undiscussed_catalog.py` |
+| 2B — the ADS retrieval and the discussion classifier it calls | `literature_crossmatch/{classify_genuine_discussion,fulltext_search_classification,deep_dive_summaries}.py` |
 | Appendix A — the exact prompt | `scoring/GEMINI.md` |
 
 `common/paths.py` holds every file location, anchored to itself rather than to
