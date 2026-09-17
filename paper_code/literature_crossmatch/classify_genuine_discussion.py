@@ -1,66 +1,49 @@
 """
-Classify whether each literature-matched object (HF/SIMBAD/NED) is
-genuinely, individually discussed by at least one paper, or only appears as
-an uncommented member of a larger survey/sample/catalog list. This
-redefines "identified" for the unidentified-objects pipeline: a positional
-catalog match alone is not enough. If no paper substantively discusses the
-object, it now counts as unidentified, even though HF/SIMBAD/NED "know"
-about it.
+Decide whether a paper genuinely discusses an object, or only lists it.
 
-For every unique matched object (grouped by object_name, same grouping as
-deep_dive_summaries.py):
-  - 0 papers found in the bibliography join -> genuinely_discussed=False
-    automatically, no LLM call needed.
-  - >=1 paper found -> fetch ALL of its papers' abstracts from ADS (the
-    whole pipeline only touches ~3,900 unique bibcodes total, so this is
-    cheap - no need to subsample), search every abstract/title for a direct
-    mention of the object's name or any of its catalog aliases (SIMBAD
-    main_id / NED object_name recorded per bibliography row - a match
-    radius can pick up more than one nearby catalog entry for the same
-    physical source, e.g. an optical name and a radio counterpart name), and
-    feed Gemini every paper that hit plus a spanning oldest+newest sample of
-    the rest (capped at PAPERS_SOFT_CAP total) so a genuinely relevant paper
-    is never left out just because it wasn't among the most recent. A name
-    hit is flagged explicitly in the prompt as strong (not conclusive -
-    could still just be a table entry) evidence. Gemini makes the final
-    call on whether any paper individually discusses the object (dedicated
-    analysis, specific measurements, notable feature) as opposed to just
-    listing it as one of many sample members.
+A positional catalogue match is not evidence that anyone has studied
+something: an object can sit in SIMBAD as row 400 of a survey table with no
+paper ever saying a word about it. This module draws that line, and it is
+what lets build_undiscussed_catalog.py keep an image that is catalogued but
+undiscussed.
 
-Results are cached per object_name across runs (discussion_classification.csv
-is loaded first; already-classified objects are kept, not re-billed) -
-re-running after new matches appear only classifies the new ones.
+The evidence for one object is its papers - title, abstract, and the verbatim
+in-body snippets ADS returned around each mention. Two steps prepare it:
 
-This script only produces discussion_classification.csv. Rerun
-generate_unidentified_html_report.py afterward to apply the reclassification
-to the report (matched objects with genuinely_discussed=False are shown and
-counted as unidentified there).
+  find_name_hits                  which papers mention the object's name or
+                                  any of its catalogue aliases at all. Name
+                                  matching is normalised and expanded to
+                                  coordinate-designation variants, because
+                                  "SDSS J1205+4910" and "J120540.4+491029"
+                                  are the same source written two ways.
+  select_papers_for_classification every name-hit, plus a spanning
+                                  oldest-to-newest sample of the rest up to
+                                  PAPERS_SOFT_CAP, so a relevant paper is
+                                  never dropped merely for being old.
 
-Requires an ADS API token at ~/.ads_api_key and GEMINI_API_KEY in the environment
-(Gemini) - see deep_dive_summaries.py for details.
+classify_one then asks Gemini for the verdict. The bar is deliberately low
+and stated as such in the prompt: one sentence saying something about this
+specific object is enough - a measured property in a table row counts, a
+dedicated study is not required. False only when every mention is a bare
+listing. temperature is 0, and build_undiscussed_catalog.py takes a majority
+of CLASSIFY_VOTES runs over identical evidence.
+
+A name hit is flagged to the model as strong but not conclusive evidence: it
+can still be a table entry, which is exactly the distinction being drawn.
+
+Used by unidentified_objects/build_undiscussed_catalog.py. Requires
+GEMINI_API_KEY; abstracts come from ads_abstracts.py.
 """
 
 import os
 import re
-import csv
 import time
 import unicodedata
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 
-from deep_dive_summaries import (
-    MATCHED_CSV,
-    SIMBAD_BIBLIOGRAPHY_CSV,
-    NED_BIBLIOGRAPHY_CSV,
-    load_bibliography,
-    load_matched_objects,
-    load_ads_api_key,
-    load_abstract_cache,
-    fetch_abstracts,
-)
 
 
 # The stage folders are siblings, so put the analysis root on the path to
@@ -68,15 +51,12 @@ from deep_dive_summaries import (
 import sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from common.paths import CLASSIFICATION_CSV
 
 # ── CONFIGURATION ───────────────────────────────────────────────────────────
 
 PAPERS_SOFT_CAP = 40  # cap on papers fed to the LLM per object (name-hits always included)
 GEMINI_MODEL = "gemini-3.1-flash-lite"
 GEMINI_WORKERS = 20
-
-CLASSIFICATION_FIELDNAMES = ["object_name", "n_papers_checked", "n_name_hits", "genuinely_discussed", "reasoning"]
 
 
 # ── 1. NAME/ALIAS MATCHING ───────────────────────────────────────────────────
@@ -297,121 +277,3 @@ def classify_one(object_name, papers, hit_bibcodes, api_key, delays=(1, 2, 4, 8,
 
 
 # ── 3. MAIN ──────────────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    gemini_api_key = os.environ.get("GEMINI_API_KEY")
-    if not gemini_api_key:
-        raise SystemExit("GEMINI_API_KEY is not set in the environment.")
-    ads_api_key = load_ads_api_key()
-
-    print("Loading bibliographies and matched objects...")
-    simbad_biblio = load_bibliography(SIMBAD_BIBLIOGRAPHY_CSV)
-    ned_biblio = load_bibliography(NED_BIBLIOGRAPHY_CSV)
-    best_by_object = load_matched_objects(MATCHED_CSV, simbad_biblio, ned_biblio)
-    print(f"{len(best_by_object)} unique matched objects.")
-
-    existing_rows = []
-    if os.path.exists(CLASSIFICATION_CSV):
-        with open(CLASSIFICATION_CSV, newline="", encoding="utf-8") as f:
-            existing_rows = list(csv.DictReader(f))
-    already_done = {r["object_name"] for r in existing_rows}
-    print(f"{len(already_done)} objects already classified (cached, will not be re-billed).")
-
-    zero_paper_objects = [
-        name for name, o in best_by_object.items()
-        if not o["papers"] and name not in already_done
-    ]
-    with_paper_objects = [
-        (name, o) for name, o in best_by_object.items()
-        if o["papers"] and name not in already_done
-    ]
-    print(
-        f"{len(zero_paper_objects)} new zero-paper objects (auto not-discussed), "
-        f"{len(with_paper_objects)} new objects need LLM classification."
-    )
-
-    new_rows = [
-        {
-            "object_name": name,
-            "n_papers_checked": 0,
-            "n_name_hits": 0,
-            "genuinely_discussed": False,
-            "reasoning": "No papers found in bibliography.",
-        }
-        for name in zero_paper_objects
-    ]
-
-    if with_paper_objects:
-        # Fetch every paper's abstract up front (not just a capped sample) -
-        # the whole dataset only has ~3,900 unique bibcodes, so this is cheap
-        # and lets us search ALL abstracts for a name/alias hit before
-        # deciding which papers to show the LLM.
-        all_bibcodes = [p["bibcode"] for _, o in with_paper_objects for p in o["papers"]]
-        print(
-            f"\nNeed abstracts for {len(all_bibcodes)} (object, paper) pairs "
-            f"({len(set(all_bibcodes))} unique bibcodes)..."
-        )
-        cache = load_abstract_cache()
-        cache = fetch_abstracts(all_bibcodes, ads_api_key, cache)
-
-        for name, o in with_paper_objects:
-            for p in o["papers"]:
-                entry = cache.get(p["bibcode"], {})
-                p["_title"] = entry.get("title") or p["title"]
-                p["_abstract"] = entry.get("abstract", "")
-
-        n_with_hits = 0
-        for name, o in with_paper_objects:
-            aliases = {name} | {p["alias"] for p in o["papers"] if p.get("alias")}
-            hit_bibcodes = find_name_hits(o["papers"], aliases)
-            o["hit_bibcodes"] = hit_bibcodes
-            o["papers_for_classification"] = select_papers_for_classification(o["papers"], hit_bibcodes)
-            if hit_bibcodes:
-                n_with_hits += 1
-        print(f"{n_with_hits}/{len(with_paper_objects)} objects have a direct name/alias hit in at least one paper.")
-
-        print(f"\nClassifying {len(with_paper_objects)} objects with Gemini ({GEMINI_MODEL}, {GEMINI_WORKERS} workers)...")
-
-        results = {}
-        t0 = time.time()
-        with ThreadPoolExecutor(max_workers=GEMINI_WORKERS) as executor:
-            futures = [
-                executor.submit(classify_one, name, o["papers_for_classification"], o["hit_bibcodes"], gemini_api_key)
-                for name, o in with_paper_objects
-            ]
-
-            for n_done, future in enumerate(as_completed(futures), start=1):
-                object_name, data, error = future.result()
-                if error:
-                    print(f"  FAILED {object_name}: {error}")
-                else:
-                    results[object_name] = data
-                if n_done % 200 == 0:
-                    print(f"  {n_done}/{len(with_paper_objects)} done, {time.time() - t0:.0f}s elapsed")
-
-        print(f"Done in {time.time() - t0:.0f}s. {len(results)}/{len(with_paper_objects)} succeeded.")
-
-        for name, o in with_paper_objects:
-            data = results.get(name)
-            if data is None:
-                continue  # failed after retries - leave unclassified, retry next run
-            new_rows.append({
-                "object_name": name,
-                "n_papers_checked": len(o["papers_for_classification"]),
-                "n_name_hits": len(o["hit_bibcodes"]),
-                "genuinely_discussed": data.genuinely_discussed,
-                "reasoning": data.reasoning,
-            })
-
-    all_rows = existing_rows + new_rows
-
-    with open(CLASSIFICATION_CSV, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=CLASSIFICATION_FIELDNAMES)
-        writer.writeheader()
-        writer.writerows(all_rows)
-
-    n_true = sum(1 for r in all_rows if str(r["genuinely_discussed"]).strip().lower() == "true")
-    print(
-        f"\nWrote {len(all_rows)} total classifications ({len(new_rows)} new) to {CLASSIFICATION_CSV}: "
-        f"{n_true} genuinely discussed, {len(all_rows) - n_true} not (now counted as unidentified)."
-    )

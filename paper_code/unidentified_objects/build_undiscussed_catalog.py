@@ -124,7 +124,7 @@ from common.paths import (
     FULLTEXT_HITS_CSV,
     FULLTEXT_CHECKPOINT_DONE,
 )
-from deep_dive_summaries import (
+from ads_abstracts import (
     load_ads_api_key,
     load_abstract_cache,
     fetch_abstracts,
@@ -252,23 +252,27 @@ def load_candidates(scores_csv, min_score):
     print(f"  condition 2  not an AnomalyMatch anomaly: {len(kept)} "
           f"({len(by_score) - len(kept)} dropped)")
 
+    # Only the surviving handful of positions are needed, so filter the
+    # 223,195-row catalogue down to them before materialising anything -
+    # building a dict of the whole thing to look up ~140 keys is pure waste.
+    wanted = {str(f) for f, _, _ in kept}
     coords = pd.read_parquet(PARQUET_PATH, columns=["SourceID", "SourceRA", "SourceDec"])
     coords["SourceID"] = coords["SourceID"].astype(str)
-    coord_by_id = coords.set_index("SourceID")[["SourceRA", "SourceDec"]].to_dict("index")
+    coords = coords[coords["SourceID"].isin(wanted)].set_index("SourceID")
 
     records, missing = [], 0
     for filename, score, _ in kept:
-        c = coord_by_id.get(str(filename))
-        if c is None:
+        if str(filename) not in coords.index:
             missing += 1
             continue
+        row = coords.loc[str(filename)]
         records.append({
             "filename": str(filename),
             "imagescore": score,
             # cross_match_ned orders its queue by avg_score.
             "avg_score": float(score),
-            "SourceRA": float(c["SourceRA"]),
-            "SourceDec": float(c["SourceDec"]),
+            "SourceRA": float(row["SourceRA"]),
+            "SourceDec": float(row["SourceDec"]),
         })
     if missing:
         print(f"  WARNING: {missing} images have no parquet coordinates and were dropped")

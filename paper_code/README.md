@@ -48,18 +48,28 @@ reasoning disabled. Two methods × two models is the four runs of Table 1.
 Stage 2 finds the papers and then reads them, in one script and one run.
 Stage 3 is independent of it.
 
-Stage 2 and stage 3 never touch the image catalogue. **If you only want to check
-the published numbers, skip to step 3 below** — it takes seconds and needs no
-key, no download and no install.
+Stage 2 reads only the small `.parquet` sidecar of the image catalogue, for
+the candidates' coordinates — never the ~3 GB `.hdf5`. Stage 3 reads neither.
+**If you only want to check the published numbers, skip to step 3 below** —
+it takes seconds and needs no key, no download and no install.
 
 ## Configuration
 
-Two environment variables tell the code where data lives:
+Environment variables tell the code where data lives and which credentials to
+use. Nothing here is baked into the code.
 
 | Variable | Points at | Needed by |
 |---|---|---|
-| `HUBBLE_DATA_DIR` | the cutout catalogue (`*.hdf5`, `*.parquet`) and `Interesting.csv` | stage 1 |
-| `PAPER_RESULTS_DIR` | the tree holding `results/`, `unidentified_objects/`, `literature_crossmatch/` | stages 2, 3 |
+| `HUBBLE_DATA_DIR` | the cutout catalogue (`*.hdf5`, `*.parquet`) and `Interesting.csv` | stage 1 (both files), stage 2 (`.parquet` only) |
+| `PAPER_RESULTS_DIR` | the tree holding `results/` and `unidentified_objects/` | stages 2, 3 |
+| `ORYAN_CATALOGUE_DIR` | the O'Ryan et al. (2023) catalogue CSVs | stage 2 (optional) |
+| `CASJOBS_WSID`, `CASJOBS_PW` | MAST CasJobs credentials, via a `.env` file | stage 0 |
+| `GEMINI_API_KEY` | Google Gen AI token | stages 1, 2 |
+| `OPENROUTER_API_KEY` | OpenRouter token | stage 1 (Qwen) |
+| `~/.ads_api_key` | the ADS token, read from that file | stage 2 |
+
+Two knobs change what stage 2 selects: `CATALOG_MIN_SCORE` (default 45, the
+released cut) and `CLASSIFY_VOTES` (default 3).
 
 Leave `PAPER_RESULTS_DIR` unset and a stage writes a fresh set of results into
 this folder instead; those paths are gitignored so the package stays code only.
@@ -120,7 +130,7 @@ export HUBBLE_DATA_DIR=~/hubble_data
 export GEMINI_API_KEY=<key>          # for scoring/gemini_*.py
 export OPENROUTER_API_KEY=<key>      # for scoring/qwen_*.py
 
-python scoring/gemini_likert.py       # Likert Select, 4x4 grid, 10 rounds
+python scoring/gemini_likert.py       # Likert, 4x4 grid, 10 rounds
 python scoring/gemini_tournament.py   # Tournament, 2x2, iterative retention
 python scoring/qwen_likert.py
 python scoring/qwen_tournament.py
@@ -128,10 +138,14 @@ python scoring/qwen_tournament.py
 
 Each script reads `TEST_MODE = True` and scores a 20,000-image working set —
 all 167 anomalies plus a random fill — once per seed in `RANDOM_SEEDS`, writing
-`results/subset_test/{provider}_{protocol}_{run}.csv`. The seeds match the
-paper: `[44, 45, 46]` in the Gemini scripts, `[44]` in the Qwen scripts, which
-is why Table 1 reports Gemini as a mean over three seeds and Qwen over one.
-Set `TEST_MODE = False` to score the whole catalogue.
+`results/subset_test/{provider}_{protocol}_{run}.csv`. Set `TEST_MODE = False`
+to score the whole catalogue.
+
+All four Table 1 rows come from the **common seed-44 sample**, one run each, so
+the rows are directly comparable. The Gemini scripts additionally carry seeds
+45 and 46 (`RANDOM_SEEDS = [44, 45, 46]`, against `[44]` for Qwen); those extra
+runs are not in Table 1 — they are what the Discussion's seed-to-seed spread is
+measured over.
 
 The `interesting` column is the ground truth: 1 when an `Interesting.csv`
 position falls within `MATCH_RADIUS_ARCSEC` of the cutout centre. All four
@@ -293,14 +307,14 @@ names any run it could not find rather than quietly omitting the row.
 | Paper element | Script |
 |---|---|
 | §3 dataset construction — the 223,195 cutouts | `dataset/pipeline.py` |
-| §3 *Likert Select* scores | `scoring/{gemini,qwen}_likert.py` |
+| §3 *Likert* scores | `scoring/{gemini,qwen}_likert.py` |
 | §3 *Tournament* scores | `scoring/{gemini,qwen}_tournament.py` |
 | §3 the `interesting` ground-truth column (3″ to AnomalyMatch) | the scoring scripts themselves, `MATCH_RADIUS_ARCSEC = 3.0` |
 | Table 1 — N selected, recall, precision, Expected Recall@2000, $/10k | `metrics/make_table1.py` |
 | Table 2 — tokens/image and $/10,000 images | `metrics/make_table1.py` |
 | Discussion — seed-to-seed recall spread | `metrics/make_table1.py` |
 | the released catalogue: 3″ cross-match, discussion screen, O'Ryan flags, 138 → 131 | `unidentified_objects/build_undiscussed_catalog.py` |
-| the ADS retrieval and the discussion classifier it calls | `literature_crossmatch/{classify_genuine_discussion,fulltext_search_classification,deep_dive_summaries}.py` |
+| the ADS retrieval and the discussion classifier it calls | `literature_crossmatch/{classify_genuine_discussion,fulltext_search_classification,ads_abstracts}.py` |
 | Appendix A — the exact prompt | `scoring/GEMINI.md` |
 
 `common/paths.py` holds every file location, anchored to itself rather than to
@@ -310,22 +324,29 @@ the working directory, so any script runs from anywhere.
 
 The protocols emit two header spellings for the same information:
 
-| Protocols | Header |
+| Method | Header |
 |---|---|
-| Likert Select, Hybrid | `index,filename,imagescore,interesting,classification,SourceRA,SourceDec` |
-| Tournament, Single-elim | `Filename,ImageScore,interesting,classification,SourceRA,SourceDec` |
+| *Likert* | `index,filename,imagescore,interesting,classification,SourceRA,SourceDec` |
+| *Tournament* | `Filename,ImageScore,interesting,classification,SourceRA,SourceDec` |
 
-Every CSV also ends with a `# TOKEN USAGE SUMMARY` footer holding the run's
-input/output token totals, which is what Table 2's cost is computed from.
+The two carry the same information; *Tournament* simply has no per-image
+index. A CSV also ends with a `# TOKEN USAGE SUMMARY` footer — input and
+output tokens, plus `# TotalThinkingTokens` for a Gemini run that logs them
+and `# TotalCostUSD` for a Qwen run — which is what the cost table is
+computed from.
 
 `common/scores_csv.py` is the single reader for both spellings, used by every
 script that consumes a scoring CSV, so either one works anywhere with no
 adjustment. It raises on a header it does not recognise rather than returning
-an empty result, and its writer round-trips the original spelling and the
-footer intact.
+an empty result — a reader that looked up `filename` directly would read a
+*Tournament* CSV as zero rows and report success.
 
 ## Not included
 
-The 223,195-cutout HDF5 (~3 GB), the result CSVs, and `Interesting.csv` — the
-AnomalyMatch anomaly positions from Gomez et al. (2025), on which every
-ground-truth label depends.
+No data of any kind. You will need, from their own sources:
+
+- the 223,195-cutout `.hdf5` and `.parquet` (~3 GB) — rebuild with stage 0
+- `Interesting.csv`, the AnomalyMatch anomaly positions from Gomez et al.
+  (2025), on which every ground-truth label depends
+- the O'Ryan et al. (2023) interacting-galaxy catalogues, Zenodo 7684876
+- the scoring CSVs, if you are not re-running stage 1

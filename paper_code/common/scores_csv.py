@@ -22,9 +22,9 @@ Every CSV also ends with a token-accounting footer:
     # TotalThinkingTokens,<n>   (Gemini runs that log them separately)
     # TotalCostUSD,<x>          (Qwen runs: the charge OpenRouter recorded)
 
-Those rows are the run's own cost record. They are parsed into `tokens` here
-and must be written back by anything that rewrites a CSV, or the cost column
-of the paper's cost table silently becomes zero.
+Those rows are the run's own cost record, parsed into `tokens` here. Anything
+that rewrites a scoring CSV must write them back, or the cost column of the
+paper's cost table silently becomes zero.
 
 `TotalCostUSD` is preferred over a token-price estimate wherever present,
 because it is what the provider actually billed - which is what the paper
@@ -54,17 +54,14 @@ class ScoresCSV:
     A parsed scoring CSV.
 
     rows       list of dicts keyed by the canonical names in _ALIASES.
-               `index` is None for the Tournament/single-elim spelling.
-    header     the original header row, so a rewrite can round-trip it.
+               `index` is None for the Tournament spelling.
     tokens     {"input", "output", "thinking": int, "cost_usd": float or None}
                from the footer. Counts are zero and cost None when absent.
     """
 
-    def __init__(self, rows, header, tokens, path):
+    def __init__(self, rows, tokens):
         self.rows = rows
-        self.header = header
         self.tokens = tokens
-        self.path = path
 
     def scores(self):
         """filename -> imagescore, as float."""
@@ -74,9 +71,6 @@ class ScoresCSV:
         """filename -> True when an AnomalyMatch anomaly is within 3"."""
         return {r["filename"]: str(r["interesting"]).strip() == "1" for r in self.rows}
 
-    def __len__(self):
-        return len(self.rows)
-
 
 def read(path):
     """
@@ -85,7 +79,7 @@ def read(path):
     Raises ValueError rather than returning an empty result, so a schema the
     reader does not understand can never be mistaken for a file with no rows.
     """
-    rows, header = [], None
+    rows = []
     tokens = {"input": 0, "output": 0, "thinking": 0, "cost_usd": None}
     column_of = None
 
@@ -109,7 +103,6 @@ def read(path):
                 continue
 
             if column_of is None:
-                header = list(raw)
                 lowered = [c.strip().lower() for c in raw]
                 column_of = {
                     canonical: next(
@@ -135,42 +128,4 @@ def read(path):
     if not rows:
         raise ValueError(f"{path}: header parsed but no data rows")
 
-    return ScoresCSV(rows, header, tokens, path)
-
-
-def write(path, rows, header, tokens):
-    """
-    Write rows back in the spelling `header` uses, footer included.
-
-    Kept so that anything rewriting a scoring CSV leaves it readable by
-    exactly the same consumers as the file it came from, with the token
-    accounting that the cost table is computed from still intact.
-    """
-    lowered = [c.strip().lower() for c in header]
-    order = []
-    for column in header:
-        canonical = next(
-            (c for c, aliases in _ALIASES.items()
-             if column.strip().lower() in aliases),
-            None,
-        )
-        if canonical is None:
-            raise ValueError(f"{path}: cannot map output column {column!r}")
-        order.append(canonical)
-    del lowered
-
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(header)
-        for row in rows:
-            writer.writerow([row[c] for c in order])
-
-        writer.writerow([])
-        writer.writerow(["# TOKEN USAGE SUMMARY"])
-        writer.writerow(["# TotalInputTokens", tokens["input"]])
-        writer.writerow(["# TotalOutputTokens", tokens["output"]])
-        writer.writerow(["# TotalTokens", tokens["input"] + tokens["output"]])
-        if tokens.get("thinking"):
-            writer.writerow(["# TotalThinkingTokens", tokens["thinking"]])
-        if tokens.get("cost_usd") is not None:
-            writer.writerow(["# TotalCostUSD", tokens["cost_usd"]])
+    return ScoresCSV(rows, tokens)

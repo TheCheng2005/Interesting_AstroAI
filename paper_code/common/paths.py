@@ -106,20 +106,13 @@ CANDIDATES_COUNTS_JSON = os.path.join(UNIDENTIFIED_DIR, "candidate_counts.json")
 # literature_crossmatch/. Stage 2 does not use them: it collects each
 # candidate's papers in memory as it cross-matches.
 LITERATURE_DIR = os.path.join(RESULTS_ROOT, "literature_crossmatch")
-MATCHED_CSV = os.path.join(LITERATURE_DIR, "matched_objects.csv")
-SIMBAD_BIBLIOGRAPHY_CSV = os.path.join(LITERATURE_DIR, "simbad_bibliography.csv")
-NED_BIBLIOGRAPHY_CSV = os.path.join(LITERATURE_DIR, "ned_bibliography.csv")
 
 
-# ── STAGE 2b: LITERATURE DISCUSSION ────────────────────────────────────────
+# ── LITERATURE DISCUSSION ──────────────────────────────────────────────────
 #
-# Outputs of the genuine-discussion pass over the papers SIMBAD and NED
-# attribute to each matched object.
+# What the genuine-discussion pass has already spent ADS quota on.
 
-CLASSIFICATION_CSV = os.path.join(LITERATURE_DIR, "discussion_classification.csv")
 FULLTEXT_HITS_CSV = os.path.join(LITERATURE_DIR, "fulltext_hits.csv")
-DEEP_DIVE_CSV = os.path.join(LITERATURE_DIR, "deep_dive_summaries.csv")
-DEEP_DIVE_JSON = os.path.join(LITERATURE_DIR, "deep_dive_summaries.json")
 
 # Tracked alongside the results, unlike the other checkpoints: it records
 # which objects the ADS full-text quota has already been spent on, which is
