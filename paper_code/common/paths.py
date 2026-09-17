@@ -66,7 +66,7 @@ ORYAN_CATALOGUE_DIR = os.environ.get(
 
 # The AnomalyMatch anomaly positions (Gomez et al. 2025). The `interesting`
 # ground-truth column in every results CSV comes from matching against this
-# at 3"; see scoring/update_interesting_radius.py.
+# at 3", by the scoring script itself (MATCH_RADIUS_ARCSEC).
 INTERESTING_CSV_PATH = os.path.join(DATA_DIR, "Interesting.csv")
 
 

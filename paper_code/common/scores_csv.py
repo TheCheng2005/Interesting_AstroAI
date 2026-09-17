@@ -142,9 +142,9 @@ def write(path, rows, header, tokens):
     """
     Write rows back in the spelling `header` uses, footer included.
 
-    Used by scoring/update_interesting_radius.py so a re-labelled CSV stays
-    readable by exactly the same consumers as the file it came from, and
-    keeps the token accounting that Table 2 is computed from.
+    Kept so that anything rewriting a scoring CSV leaves it readable by
+    exactly the same consumers as the file it came from, with the token
+    accounting that the cost table is computed from still intact.
     """
     lowered = [c.strip().lower() for c in header]
     order = []

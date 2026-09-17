@@ -30,15 +30,13 @@ reasoning disabled. Two methods × two models is the four runs of Table 1.
   └─────────┬──────────┘  → results/subset_test/*.csv
             │                needs stage 0 + an API key; bills real tokens
   ┌─────────▼──────────┐
-  │ 2A unidentified_   │  find_unidentified_objects.py
-  │    objects/        │  FIND THE PAPERS: 3" match against HF galaxy-
-  │                    │  mentions, SIMBAD and NED, and pull the
-  │                    │  bibliography each one attributes to the object
-  └─────────┬──────────┘
-            │  every paper that cites an object at this position
-  ┌─────────▼──────────┐
-  │ 2B unidentified_   │  build_undiscussed_catalog.py
-  │    objects/        │  JUDGE THE PAPERS: do any actually discuss it?
+  │ 2  unidentified_   │  build_undiscussed_catalog.py  <- the only command
+  │    objects/        │
+  │   ├─ 2A ───────────┤  FIND THE PAPERS (find_unidentified_objects.py,
+  │   │                │  imported as a library): 3" match against HF
+  │   │                │  galaxy-mentions, SIMBAD and NED, and pull the
+  │   │                │  bibliography each attributes to the object
+  │   ├─ 2B ───────────┤  JUDGE THE PAPERS: do any actually discuss it?
   │                    │  abstracts + in-body snippets -> Gemini verdict,
   │                    │  then the O'Ryan et al. (2023) screening flags
   └─────────┬──────────┘  → undiscussed_catalog.csv, candidate_counts.json
@@ -48,9 +46,9 @@ reasoning disabled. Two methods × two models is the four runs of Table 1.
   └────────────────────┘  → the published numbers, stdlib only, seconds
 ```
 
-2A finds the papers, 2B reads them. **One command runs both** —
-`build_undiscussed_catalog.py` calls 2A's cross-match code directly, so there
-is no separate 2A run to do first. Stage 3 is independent of either.
+2A finds the papers, 2B reads them — but **2A is not a command**.
+`build_undiscussed_catalog.py` imports 2A's cross-match code and calls it, so
+one run does both. Stage 3 is independent of either.
 
 Stage 2 and stage 3 never touch the image catalogue. **If you only want to check
 the published numbers, skip to step 3 below** — it takes seconds and needs no
@@ -138,11 +136,10 @@ is why Table 1 reports Gemini as a mean over three seeds and Qwen over one.
 Set `TEST_MODE = False` to score the whole catalogue.
 
 The `interesting` column is the ground truth: 1 when an `Interesting.csv`
-position falls within `MATCH_RADIUS_ARCSEC` of the cutout centre. All eight
-scoring scripts already use 3″, so nothing further is needed.
-`scoring/update_interesting_radius.py` re-labels an *existing* CSV at a
-tighter radius — a no-op on these runs, kept for the older full-catalogue CSVs
-in `results/full_catalog/`, which were labelled at 10″.
+position falls within `MATCH_RADIUS_ARCSEC` of the cutout centre. All four
+scoring scripts use 3″, which is the paper's "cutouts receive an anomaly label
+when an AnomalyMatch detection lies within 3″", so the labels are final as
+written — nothing re-labels them afterwards.
 
 Re-running bills real tokens and, because the models are not deterministic,
 will not reproduce the published CSVs image-for-image. The aggregate metrics
@@ -171,10 +168,15 @@ cross-match functions itself; you do not run 2A first. It is split out below
 only because the two halves answer different questions, and because 2A is
 also runnable on its own for a different purpose.
 
-### Step 2A — find the papers
+### Step 2A — find the papers (runs inside 2B)
 
-The code lives in `unidentified_objects/find_unidentified_objects.py`. For
-each image it searches a 3″ circle around the position, in three catalogues:
+There is no 2A command. `unidentified_objects/find_unidentified_objects.py`
+is the cross-match **library** that 2B imports and calls; the file is
+required — delete it and 2B dies on `ModuleNotFoundError` — but you never
+invoke it yourself. This section describes what happens inside the run.
+
+For each candidate image, 2A searches a 3″ circle around the position in
+three catalogues:
 
 | Catalogue | What a hit means | What it yields |
 |---|---|---|
@@ -184,7 +186,11 @@ each image it searches a 3″ circle around the position, in three catalogues:
 
 The SIMBAD and NED bibliographies are the point: they are how an image gets
 from "there is an object at these coordinates" to "here are the 40 papers
-that cite it". That list is the evidence 2B then judges.
+that cite it". That list is the evidence 2B then judges. This is the paper's
+"we search for positional counterparts within 3″ in SIMBAD, NED, a dataset of
+galaxy mentions in astronomical papers, and the interacting-galaxy catalogue
+of O'Ryan et al. (2023)" — applied to the 138 candidates, not to the whole
+corpus.
 
 Two choices worth knowing. Both SIMBAD and NED are queried for **every**
 image rather than stopping at the first catalogue that answers — stopping
@@ -193,24 +199,13 @@ the literature on exactly the objects most likely to have some. And one image
 can resolve to several catalogue objects within 3″ (an optical and a radio
 designation for one source), so all of their papers are pooled.
 
-Running it standalone is optional and does something different:
+The file also carries a `__main__` block that sweeps the **whole** scored
+corpus and writes `unidentified_objects.csv`, `matched_objects.csv` and the
+two bibliographies. No number in the paper comes from it. It is left in place
+because it is the same code path 2B calls, but it is not a step here.
 
-```bash
-export PAPER_RESULTS_DIR=/path/to/analysis   # where step 1's CSVs live
-python unidentified_objects/find_unidentified_objects.py
-```
-
-That sweeps the **whole scored corpus** instead of the candidate shortlist,
-writing `unidentified_objects.csv`, `literature_crossmatch/matched_objects.csv`
-and the two bibliographies — useful for a corpus-wide matched/unmatched split,
-but not needed for any number in the current paper. No key; the NED pass
-checkpoints and resumes, so it is safe to interrupt.
-
-**SIMBAD and NED are live.** Re-running returns slightly fewer unmatched
-images than an earlier run as positions get catalogued over time — a re-run
-six weeks on moved one corpus-wide count by 23 images out of 25,702 and left
-the candidate shortlist unchanged. Quote the query date alongside any count
-taken from it.
+**SIMBAD and NED are live**, so a later run sees positions that have since
+been catalogued. Quote the query date alongside any count taken from them.
 
 ### Step 2B — judge whether those papers discuss the object
 
@@ -315,11 +310,10 @@ names any run it could not find rather than quietly omitting the row.
 | §3 *Likert Select* scores | `scoring/{gemini,qwen}_likert.py` |
 | §3 *Tournament* scores | `scoring/{gemini,qwen}_tournament.py` |
 | §3 the `interesting` ground-truth column (3″ to AnomalyMatch) | the scoring scripts themselves, `MATCH_RADIUS_ARCSEC = 3.0` |
-| §3 re-labelling an older 10″ CSV at 3″ | `scoring/update_interesting_radius.py` |
 | Table 1 — N selected, recall, precision, Expected Recall@2000, $/10k | `metrics/make_table1.py` |
 | Table 2 — tokens/image and $/10,000 images | `metrics/make_table1.py` |
 | Discussion — seed-to-seed recall spread | `metrics/make_table1.py` |
-| 2A — finding the papers a catalogue attributes to each position | `unidentified_objects/find_unidentified_objects.py` |
+| 2A — finding the papers a catalogue attributes to each position | `unidentified_objects/find_unidentified_objects.py` (library, not a command) |
 | 2B — the released catalogue, 138 → 131, with O'Ryan flags | `unidentified_objects/build_undiscussed_catalog.py` |
 | 2B — the ADS retrieval and the discussion classifier it calls | `literature_crossmatch/{classify_genuine_discussion,fulltext_search_classification,deep_dive_summaries}.py` |
 | Appendix A — the exact prompt | `scoring/GEMINI.md` |
