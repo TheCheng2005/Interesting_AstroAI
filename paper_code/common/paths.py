@@ -91,10 +91,9 @@ SUBSET_DIR = os.path.join(RESULTS_DIR, "subset_test")
 FULL_RUN_DIR = os.path.join(RESULTS_DIR, "full_catalog")
 
 
-# ── STAGE 2: CATALOGUE CROSS-MATCH ─────────────────────────────────────────
+# ── STAGE 2: THE RELEASED CANDIDATE CATALOGUE ──────────────────────────────
 
 UNIDENTIFIED_DIR = os.path.join(RESULTS_ROOT, "unidentified_objects")
-UNIDENTIFIED_CSV = os.path.join(UNIDENTIFIED_DIR, "unidentified_objects.csv")
 
 # The released candidate catalogue, the full screened selection behind it
 # (including the images the discussion screen removed), and the counts the
@@ -103,8 +102,9 @@ UNDISCUSSED_CATALOG_CSV = os.path.join(UNIDENTIFIED_DIR, "undiscussed_catalog.cs
 CANDIDATES_ALL_CSV = os.path.join(UNIDENTIFIED_DIR, "all_nonreference_above_threshold.csv")
 CANDIDATES_COUNTS_JSON = os.path.join(UNIDENTIFIED_DIR, "candidate_counts.json")
 
-# Written by a standalone stage-2A sweep, and read by its own corpus-wide
-# tools, so they live together.
+# Corpus-wide bibliographies, read by the standalone entry points in
+# literature_crossmatch/. Stage 2 does not use them: it collects each
+# candidate's papers in memory as it cross-matches.
 LITERATURE_DIR = os.path.join(RESULTS_ROOT, "literature_crossmatch")
 MATCHED_CSV = os.path.join(LITERATURE_DIR, "matched_objects.csv")
 SIMBAD_BIBLIOGRAPHY_CSV = os.path.join(LITERATURE_DIR, "simbad_bibliography.csv")

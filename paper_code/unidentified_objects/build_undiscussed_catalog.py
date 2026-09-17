@@ -2,11 +2,11 @@
 Build the released candidate catalogue: high-scoring cutouts that are not
 reference anomalies and that nobody has written about individually.
 
-This is stage 2B, and it runs stage 2A itself - it imports
-find_unidentified_objects and calls its cross-match and bibliography
-functions on the candidate shortlist, so there is no separate 2A run to do
-first. 2A answers "which papers mention an object at this position"; 2B
-answers "does any of them actually say something about it".
+The script is self-contained: it does the catalogue cross-match itself
+(sections 2A-i to 2A-iv below) rather than importing it, because that code
+had no other caller and no purpose of its own here. Two questions in
+sequence: which papers mention an object at this position, and does any of
+them actually say something about it.
 
 Four conditions, applied in order, then a screening pass:
 
@@ -17,7 +17,7 @@ Four conditions, applied in order, then a screening pass:
      coordinate catalogue. A hit there means a paper already resolved a name
      to this position, so the object is discussed by construction. SIMBAD and
      NED are queried in the same pass, but only to collect each matched
-     object's bibliography - that list is what condition 4 reads.
+     object's bibliography - that list is the evidence condition 4 reads.
   4. No SIMBAD or NED object matched to the image is *genuinely discussed* in
      the literature.
 
@@ -32,7 +32,7 @@ catalogue: being catalogued is fine, being discussed is not. So unlike
 find_unidentified_objects.py, SIMBAD and NED are queried here *only to
 collect papers*, never to disqualify an image.
 
-Two consequences for how the cross-match runs:
+Two consequences for how the cross-match runs (2A-i to 2A-iv):
 
   - Both SIMBAD and NED are queried for every surviving image, rather than
     stopping at the first catalogue that answers. The chained version left
@@ -86,7 +86,16 @@ import glob
 import json
 import sys
 import time
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import numpy as np
+import pandas as pd
+import pyvo
+from astropy.table import Table
+from astropy.coordinates import SkyCoord
+import astropy.units as u
+from astroquery.ipac.ned import Ned
 
 # The stage folders are siblings; reach common/, this stage's own modules and
 # the literature helpers. Running as a script would put this file's directory
@@ -103,6 +112,9 @@ _sys.path.insert(0, os.path.join(_ROOT, "literature_crossmatch"))
 from common import scores_csv as scores_csv_reader
 from common.paths import (
     RESULTS_DIR,
+    HF_CACHE_DIR,
+    NED_CHECKPOINT_CSV,
+    NED_BIBLIO_CHECKPOINT_CSV,
     UNDISCUSSED_CATALOG_CSV,
     CANDIDATES_ALL_CSV,
     CANDIDATES_COUNTS_JSON,
@@ -131,26 +143,30 @@ from fulltext_search_classification import (
     extract_snippets,
     FIELDNAMES as FULLTEXT_FIELDNAMES,
 )
-from find_unidentified_objects import (
-    MATCH_RADIUS_ARCSEC,
-    SIMBAD_TAP_URL,
-    MATCH_RADIUS_DEG,
-    COORD_RESOLUTION_PARQUET_PATH,
-    COORD_RESOLUTION_PARQUET_URL,
-    GALAXY_MENTIONS_PARQUET_PATH,
-    GALAXY_MENTIONS_PARQUET_URL,
-    download_parquet,
-    load_resolved_catalog,
-    load_mentions_lookup,
-    cross_match_hf,
-    cross_match_simbad,
-    fetch_simbad_bibliography,
-    cross_match_ned,
-    fetch_ned_bibliography,
-)
 
 
 # ── CONFIGURATION ──────────────────────────────────────────────────────────
+
+HF_RESOLVE_BASE = (
+    "https://huggingface.co/datasets/astronolan/galaxy-mentions/resolve/"
+    "refs%2Fconvert%2Fparquet"
+)
+COORD_RESOLUTION_PARQUET_URL = f"{HF_RESOLVE_BASE}/coordinate_resolution/train/0000.parquet"
+COORD_RESOLUTION_PARQUET_PATH = os.path.join(HF_CACHE_DIR, "coordinate_resolution.parquet")
+GALAXY_MENTIONS_PARQUET_URL = f"{HF_RESOLVE_BASE}/galaxy_mentions/train/0000.parquet"
+GALAXY_MENTIONS_PARQUET_PATH = os.path.join(HF_CACHE_DIR, "galaxy_mentions.parquet")
+
+MATCH_RADIUS_ARCSEC = 3.0  # cross-match radius against all three catalogs
+MATCH_RADIUS_DEG = MATCH_RADIUS_ARCSEC / 3600.0
+
+SIMBAD_TAP_URL = "https://simbad.cds.unistra.fr/simbad/sim-tap"
+SIMBAD_CHUNK_SIZE = 5000  # rows per bulk TAP-upload query
+
+NED_TAP_URL = "https://ned.ipac.caltech.edu/tap"
+NED_TOP_N = None  # None = check every HF+SIMBAD survivor (not just a top-scoring subset)
+NED_WORKERS = 8  # polite concurrency for NED's public per-object TAP service
+NED_BIBLIO_WORKERS = 5  # concurrency for NED's classic (non-TAP) references endpoint
+
 
 MIN_SCORE = int(os.environ.get("CATALOG_MIN_SCORE", "45"))
 
@@ -261,7 +277,513 @@ def load_candidates(scores_csv, min_score):
                          nonreference=len(kept))
 
 
-# ── 2. CONDITION 3 + PAPER COLLECTION ──────────────────────────────────────
+# ── 2A-i. THE HF GALAXY-MENTIONS CATALOGUES ────────────────────────────────
+
+def download_parquet(url, dest_path):
+    """Download a parquet file if not already cached."""
+    if os.path.exists(dest_path):
+        return
+
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+    print(f"Downloading {os.path.basename(dest_path)} from Hugging Face...")
+    urllib.request.urlretrieve(url, dest_path)
+    print(f"Saved to {dest_path}")
+
+
+def load_resolved_catalog(parquet_path):
+    """
+    Load the coordinate_resolution config and keep only rows with a valid
+    resolved RA/Dec (has_resolved_coordinates == True).
+    """
+    df = pd.read_parquet(parquet_path)
+
+    resolved = df[df["has_resolved_coordinates"] == True].copy()
+    resolved = resolved.dropna(subset=["resolved_ra_deg", "resolved_dec_deg"])
+
+    print(
+        f"Loaded coordinate_resolution catalog: {len(df)} total rows, "
+        f"{len(resolved)} with resolved RA/Dec."
+    )
+
+    return resolved
+
+
+def load_mentions_lookup(parquet_path):
+    """Load galaxy_mentions and index by mention_id for arxiv_url/summary lookup."""
+    df = pd.read_parquet(parquet_path, columns=["mention_id", "arxiv_url", "summary"])
+    return df.set_index("mention_id")[["arxiv_url", "summary"]].to_dict("index")
+
+
+def _run_sync_with_retry(service, query, uploads=None, delays=(1, 2, 4, 8, 16)):
+    """
+    Run a TAP sync query with retries: both SIMBAD's and NED's public TAP
+    services occasionally drop connections under load, especially on
+    larger/heavier queries like the bibliography join.
+    """
+    for i, delay in enumerate(delays):
+        try:
+            if uploads is not None:
+                return service.run_sync(query, uploads=uploads)
+            return service.run_sync(query)
+        except Exception:
+            if i == len(delays) - 1:
+                raise
+            time.sleep(delay)
+
+
+def cross_match_hf(records, resolved_catalog, mentions_lookup, radius_arcsec=MATCH_RADIUS_ARCSEC):
+    """
+    Split records into (unmatched, matched) against the HF coordinate_resolution
+    catalog. Matched records are enriched with object_name (resolved_name or
+    ned_object_name) and arxiv_url/summary (joined via mention_id).
+    """
+    catalog_coords = SkyCoord(
+        ra=resolved_catalog["resolved_ra_deg"].values * u.deg,
+        dec=resolved_catalog["resolved_dec_deg"].values * u.deg,
+    )
+
+    image_coords = SkyCoord(
+        ra=[r["SourceRA"] for r in records] * u.deg,
+        dec=[r["SourceDec"] for r in records] * u.deg,
+    )
+
+    nearest_idx, sep2d, _ = image_coords.match_to_catalog_sky(catalog_coords)
+
+    unmatched = []
+    matched = []
+
+    resolved_reset = resolved_catalog.reset_index(drop=True)
+
+    for record, idx, sep in zip(records, nearest_idx, sep2d.arcsec):
+        if sep > radius_arcsec:
+            unmatched.append(record)
+            continue
+
+        cat_row = resolved_reset.iloc[idx]
+        mention = mentions_lookup.get(cat_row.get("mention_id"), {})
+
+        object_name = cat_row.get("resolved_name") or cat_row.get("ned_object_name") or ""
+
+        matched.append({
+            **record,
+            "matched_source": "HF",
+            "object_name": object_name,
+            "object_type": "",
+            "ref_count": "",
+            "redshift": "",
+            "arxiv_url": mention.get("arxiv_url", ""),
+            "summary": mention.get("summary", ""),
+        })
+
+    print(
+        f"HF cross-match: {len(records)} images vs "
+        f"{len(resolved_catalog)} resolved catalog entries within {radius_arcsec}\". "
+        f"Matched: {len(matched)}  Unmatched: {len(unmatched)}"
+    )
+
+    return unmatched, matched
+
+
+# ── 3. SIMBAD BULK CROSS-MATCH ──────────────────────────────────────────────
+
+def cross_match_simbad(records, radius_deg=MATCH_RADIUS_DEG, chunk_size=SIMBAD_CHUNK_SIZE):
+    """
+    Bulk cross-match records against SIMBAD via TAP table upload, in chunks.
+    Fetches main_id/otype/nbref for every match. If a record falls within
+    radius_deg of more than one SIMBAD object, the one with the highest nbref
+    (most-studied) is kept as the representative match.
+
+    Returns (unmatched, matched) records; matched records are enriched with
+    object_name, object_type, ref_count (nbref).
+    """
+    simbad = pyvo.dal.TAPService(SIMBAD_TAP_URL)
+    best_match_by_filename = {}
+
+    for i in range(0, len(records), chunk_size):
+        chunk = records[i:i + chunk_size]
+
+        upload_table = Table({
+            "filename": [r["filename"] for r in chunk],
+            "ra": [r["SourceRA"] for r in chunk],
+            "dec": [r["SourceDec"] for r in chunk],
+        })
+
+        query = f"""
+        SELECT mine.filename, basic.main_id, basic.otype, basic.nbref
+        FROM TAP_UPLOAD.mine AS mine
+        JOIN basic
+        ON 1=CONTAINS(POINT('ICRS', basic.ra, basic.dec),
+                       CIRCLE('ICRS', mine.ra, mine.dec, {radius_deg}))
+        """
+
+        t0 = time.time()
+        result = _run_sync_with_retry(simbad, query, uploads={"mine": upload_table})
+
+        for row in result:
+            filename = row["filename"]
+            nbref = int(row["nbref"]) if row["nbref"] is not None else 0
+            existing = best_match_by_filename.get(filename)
+
+            if existing is None or nbref > existing["ref_count"]:
+                best_match_by_filename[filename] = {
+                    "object_name": str(row["main_id"]),
+                    "object_type": str(row["otype"]),
+                    "ref_count": nbref,
+                }
+
+        print(
+            f"SIMBAD chunk {i}-{i + len(chunk)}: {time.time() - t0:.1f}s, "
+            f"running total matched={len(best_match_by_filename)}"
+        )
+
+    unmatched = [r for r in records if r["filename"] not in best_match_by_filename]
+    matched = [
+        {
+            **r,
+            "matched_source": "SIMBAD",
+            "object_name": best_match_by_filename[r["filename"]]["object_name"],
+            "object_type": best_match_by_filename[r["filename"]]["object_type"],
+            "ref_count": best_match_by_filename[r["filename"]]["ref_count"],
+            "redshift": "",
+            "arxiv_url": "",
+            "summary": "",
+        }
+        for r in records
+        if r["filename"] in best_match_by_filename
+    ]
+
+    print(
+        f"SIMBAD cross-match: {len(records)} images. "
+        f"Matched: {len(matched)}  Unmatched: {len(unmatched)}"
+    )
+
+    return unmatched, matched
+
+
+def fetch_simbad_bibliography(matched_simbad_records, radius_deg=MATCH_RADIUS_DEG, chunk_size=1000):
+    """
+    For every SIMBAD-matched record, fetch the full list of papers
+    (bibcode, year, title) that mention its SIMBAD object via the
+    basic -> has_ref -> ref join. Returns a list of dicts, one row per
+    (filename, paper).
+    """
+    if not matched_simbad_records:
+        return []
+
+    simbad = pyvo.dal.TAPService(SIMBAD_TAP_URL)
+    biblio_rows = []
+
+    for i in range(0, len(matched_simbad_records), chunk_size):
+        chunk = matched_simbad_records[i:i + chunk_size]
+
+        upload_table = Table({
+            "filename": [r["filename"] for r in chunk],
+            "ra": [r["SourceRA"] for r in chunk],
+            "dec": [r["SourceDec"] for r in chunk],
+        })
+
+        query = f"""
+        SELECT mine.filename, basic.main_id, ref.bibcode, ref."year" AS pub_year, ref.title
+        FROM TAP_UPLOAD.mine AS mine
+        JOIN basic ON 1=CONTAINS(POINT('ICRS', basic.ra, basic.dec),
+                                  CIRCLE('ICRS', mine.ra, mine.dec, {radius_deg}))
+        JOIN has_ref ON has_ref.oidref = basic.oid
+        JOIN ref ON ref.oidbib = has_ref.oidbibref
+        """
+
+        t0 = time.time()
+        result = _run_sync_with_retry(simbad, query, uploads={"mine": upload_table})
+
+        for row in result:
+            biblio_rows.append({
+                "filename": row["filename"],
+                "main_id": str(row["main_id"]),
+                "bibcode": str(row["bibcode"]),
+                "year": int(row["pub_year"]) if row["pub_year"] is not None else "",
+                "title": str(row["title"]),
+            })
+
+        print(f"SIMBAD bibliography chunk {i}-{i + len(chunk)}: {time.time() - t0:.1f}s, {len(result)} paper rows")
+
+    print(f"SIMBAD bibliography: {len(biblio_rows)} (image, paper) rows total")
+
+    return biblio_rows
+
+
+# ── 4. NED PER-OBJECT CROSS-MATCH (TOP-N ONLY) ──────────────────────────────
+
+def _ned_query_one(record, radius_deg):
+    """
+    Run a single NED cone-search query for one record's coordinates, with
+    retries: NED's public TAP service occasionally drops connections under
+    concurrent load. Fetches prefname/prefphytype/n_crosref/z for the nearest
+    match (TOP 1).
+    """
+    ned = pyvo.dal.TAPService(NED_TAP_URL)
+    ra, dec = record["SourceRA"], record["SourceDec"]
+
+    query = f"""
+    SELECT TOP 1 prefname, prefphytype, n_crosref, z
+    FROM NEDTAP.objdir
+    WHERE 1=CONTAINS(POINT('J2000', ra, dec),
+                      CIRCLE('J2000', {ra}, {dec}, {radius_deg}))
+    """
+
+    result = _run_sync_with_retry(ned, query)
+
+    if len(result) == 0:
+        return record["filename"], None
+
+    row = result[0]
+    z_value = row["z"]
+    redshift = "" if z_value is None or np.ma.is_masked(z_value) or pd.isna(z_value) else float(z_value)
+
+    return record["filename"], {
+        "object_name": str(row["prefname"]),
+        "object_type": str(row["prefphytype"]),
+        "ref_count": int(row["n_crosref"]) if row["n_crosref"] is not None else 0,
+        "redshift": redshift,
+    }
+
+
+def _load_ned_checkpoint(path):
+    """
+    Load a previously-written NED checkpoint CSV, if any. Returns a dict
+    filename -> match_info (or None if that filename was checked and found
+    to have no NED match).
+    """
+    checkpoint = {}
+    if not os.path.exists(path):
+        return checkpoint
+
+    with open(path, "r", newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            if row["matched"] == "1":
+                checkpoint[row["filename"]] = {
+                    "object_name": row["object_name"],
+                    "object_type": row["object_type"],
+                    "ref_count": int(row["ref_count"]) if row["ref_count"] else 0,
+                    "redshift": float(row["redshift"]) if row["redshift"] else "",
+                }
+            else:
+                checkpoint[row["filename"]] = None
+
+    print(f"Resuming NED cross-match from checkpoint: {len(checkpoint)} images already checked.")
+    return checkpoint
+
+
+def cross_match_ned(records, radius_deg=MATCH_RADIUS_DEG, top_n=NED_TOP_N, workers=NED_WORKERS,
+                     checkpoint_path=NED_CHECKPOINT_CSV):
+    """
+    Cross-match records against NED (one query per object, run with modest
+    thread-pool concurrency since NED's TAP service does not support bulk
+    table uploads). If top_n is None, every record is checked; otherwise
+    only the top_n highest-scoring records are checked and the rest are
+    passed through untouched (NED-unchecked).
+
+    Results are checkpointed to checkpoint_path as they arrive, so an
+    interrupted run can be resumed without re-querying already-checked
+    objects.
+
+    Returns (unmatched, matched, checked_filenames).
+    """
+    records_sorted = sorted(records, key=lambda r: r["avg_score"], reverse=True)
+    to_check = records_sorted if top_n is None else records_sorted[:top_n]
+    passthrough = [] if top_n is None else records_sorted[top_n:]
+
+    checkpoint = _load_ned_checkpoint(checkpoint_path)
+    still_to_query = [r for r in to_check if r["filename"] not in checkpoint]
+
+    print(
+        f"NED cross-match: {len(to_check)} images to check "
+        f"({len(to_check) - len(still_to_query)} already in checkpoint, "
+        f"{len(still_to_query)} remaining)..."
+    )
+
+    checkpoint_is_new = not os.path.exists(checkpoint_path)
+    checkpoint_file = open(checkpoint_path, "a", newline="", encoding="utf-8")
+    checkpoint_writer = csv.writer(checkpoint_file)
+    if checkpoint_is_new:
+        checkpoint_writer.writerow(["filename", "matched", "object_name", "object_type", "ref_count", "redshift"])
+
+    t0 = time.time()
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [
+                executor.submit(_ned_query_one, record, radius_deg)
+                for record in still_to_query
+            ]
+
+            for n_done, future in enumerate(as_completed(futures), start=1):
+                filename, match_info = future.result()
+                checkpoint[filename] = match_info
+
+                if match_info is not None:
+                    checkpoint_writer.writerow([
+                        filename, 1, match_info["object_name"], match_info["object_type"],
+                        match_info["ref_count"], match_info["redshift"],
+                    ])
+                else:
+                    checkpoint_writer.writerow([filename, 0, "", "", "", ""])
+
+                if n_done % 100 == 0:
+                    checkpoint_file.flush()
+
+                if n_done % 500 == 0:
+                    print(f"  NED progress: {n_done}/{len(still_to_query)} newly checked, {time.time() - t0:.0f}s elapsed")
+    finally:
+        checkpoint_file.close()
+
+    match_info_by_filename = {
+        filename: info for filename, info in checkpoint.items() if info is not None
+    }
+    checked_filenames = {r["filename"] for r in to_check}
+
+    unmatched_checked = [r for r in to_check if r["filename"] not in match_info_by_filename]
+    matched = [
+        {
+            **r,
+            "matched_source": "NED",
+            "object_name": match_info_by_filename[r["filename"]]["object_name"],
+            "object_type": match_info_by_filename[r["filename"]]["object_type"],
+            "ref_count": match_info_by_filename[r["filename"]]["ref_count"],
+            "redshift": match_info_by_filename[r["filename"]]["redshift"],
+            "arxiv_url": "",
+            "summary": "",
+        }
+        for r in to_check
+        if r["filename"] in match_info_by_filename
+    ]
+    unmatched = unmatched_checked + passthrough
+
+    print(
+        f"NED cross-match done in {time.time() - t0:.0f}s: "
+        f"{len(to_check)} checked ({len(still_to_query)} newly queried), matched={len(matched)}, "
+        f"unmatched-and-checked={len(unmatched_checked)}, "
+        f"passed-through-unchecked={len(passthrough)}"
+    )
+
+    return unmatched, matched, checked_filenames
+
+
+# ── 4b. NED BIBLIOGRAPHY (classic non-TAP references endpoint) ──────────────
+
+def _ned_biblio_query_one(object_name, delays=(1, 2, 4, 8, 16)):
+    """
+    Fetch the full reference list (bibcode, title) for one NED object via
+    astroquery's classic (non-TAP) interface, with retries. Objects with no
+    references raise an astroquery exception, which we treat as an empty
+    list rather than an error.
+    """
+    for i, delay in enumerate(delays):
+        try:
+            table = Ned.get_table(object_name, table="references")
+            papers = []
+            for row in table:
+                bibcode = str(row["Refcode"]).strip()
+                title = str(row["Article Title"]).strip() if row["Article Title"] else ""
+                year = bibcode[:4] if bibcode[:4].isdigit() else ""
+                papers.append({"bibcode": bibcode, "year": year, "title": title})
+            return object_name, papers
+        except Exception as e:
+            msg = str(e).lower()
+            if "no ref" in msg or "no references" in msg or "no match" in msg:
+                return object_name, []
+            if i == len(delays) - 1:
+                print(f"  NED biblio failed for {object_name!r} after retries: {e}")
+                return object_name, []
+            time.sleep(delay)
+
+
+def fetch_ned_bibliography(matched_ned_records, workers=NED_BIBLIO_WORKERS,
+                            checkpoint_path=NED_BIBLIO_CHECKPOINT_CSV):
+    """
+    For every unique NED object matched, fetch its full reference list
+    (bibcode/year/title) via the classic references endpoint. Results are
+    checkpointed per-object (not per-image) since several images can
+    resolve to the same NED object. Returns a list of dicts, one row per
+    (filename, paper).
+    """
+    if not matched_ned_records:
+        return []
+
+    filenames_by_object = {}
+    for r in matched_ned_records:
+        filenames_by_object.setdefault(r["object_name"], []).append(r["filename"])
+
+    unique_objects = sorted(filenames_by_object.keys())
+
+    papers_by_object = {}
+    if os.path.exists(checkpoint_path):
+        with open(checkpoint_path, "r", newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                papers_by_object.setdefault(row["object_name"], []).append({
+                    "bibcode": row["bibcode"], "year": row["year"], "title": row["title"],
+                })
+        # NED_NO_PAPERS marker rows record objects we already checked that
+        # have zero references, so we don't requery them.
+        checked_objects = set(papers_by_object.keys())
+        if os.path.exists(checkpoint_path + ".done"):
+            with open(checkpoint_path + ".done", "r", encoding="utf-8") as f:
+                checked_objects |= {line.strip() for line in f if line.strip()}
+    else:
+        checked_objects = set()
+
+    still_to_query = [o for o in unique_objects if o not in checked_objects]
+    print(
+        f"NED bibliography: {len(unique_objects)} unique matched objects "
+        f"({len(unique_objects) - len(still_to_query)} already in checkpoint, "
+        f"{len(still_to_query)} remaining)..."
+    )
+
+    checkpoint_is_new = not os.path.exists(checkpoint_path)
+    checkpoint_file = open(checkpoint_path, "a", newline="", encoding="utf-8")
+    checkpoint_writer = csv.writer(checkpoint_file)
+    if checkpoint_is_new:
+        checkpoint_writer.writerow(["object_name", "bibcode", "year", "title"])
+    done_file = open(checkpoint_path + ".done", "a", encoding="utf-8")
+
+    t0 = time.time()
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(_ned_biblio_query_one, obj) for obj in still_to_query]
+
+            for n_done, future in enumerate(as_completed(futures), start=1):
+                object_name, papers = future.result()
+                papers_by_object[object_name] = papers
+
+                for p in papers:
+                    checkpoint_writer.writerow([object_name, p["bibcode"], p["year"], p["title"]])
+                done_file.write(object_name + "\n")
+
+                if n_done % 100 == 0:
+                    checkpoint_file.flush()
+                    done_file.flush()
+
+                if n_done % 500 == 0:
+                    print(f"  NED biblio progress: {n_done}/{len(still_to_query)} newly checked, {time.time() - t0:.0f}s elapsed")
+    finally:
+        checkpoint_file.close()
+        done_file.close()
+
+    biblio_rows = []
+    for object_name, filenames in filenames_by_object.items():
+        for p in papers_by_object.get(object_name, []):
+            for filename in filenames:
+                biblio_rows.append({
+                    "filename": filename,
+                    "object_name": object_name,
+                    "bibcode": p["bibcode"],
+                    "year": p["year"],
+                    "title": p["title"],
+                })
+
+    print(f"NED bibliography done in {time.time() - t0:.0f}s: {len(biblio_rows)} (image, paper) rows total")
+
+    return biblio_rows
+
+
+# ── 2B. CONDITION 3 + PAPER COLLECTION ─────────────────────────────────────
 
 def run_crossmatch(records):
     """

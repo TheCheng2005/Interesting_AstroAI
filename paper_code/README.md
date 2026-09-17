@@ -30,14 +30,13 @@ reasoning disabled. Two methods × two models is the four runs of Table 1.
   └─────────┬──────────┘  → results/subset_test/*.csv
             │                needs stage 0 + an API key; bills real tokens
   ┌─────────▼──────────┐
-  │ 2  unidentified_   │  build_undiscussed_catalog.py  <- the only command
+  │ 2  unidentified_   │  build_undiscussed_catalog.py
   │    objects/        │
-  │   ├─ 2A ───────────┤  FIND THE PAPERS (find_unidentified_objects.py,
-  │   │                │  imported as a library): 3" match against HF
-  │   │                │  galaxy-mentions, SIMBAD and NED, and pull the
-  │   │                │  bibliography each attributes to the object
-  │   ├─ 2B ───────────┤  JUDGE THE PAPERS: do any actually discuss it?
-  │                    │  abstracts + in-body snippets -> Gemini verdict,
+  │                    │  FIND THE PAPERS: 3" match against HF galaxy-
+  │                    │  mentions, SIMBAD and NED, pulling the biblio-
+  │                    │  graphy each attributes to the object;
+  │                    │  JUDGE THE PAPERS: do any actually discuss it?
+  │                    │  abstracts + in-body snippets -> Gemini verdict;
   │                    │  then the O'Ryan et al. (2023) screening flags
   └─────────┬──────────┘  → undiscussed_catalog.csv, candidate_counts.json
             │                needs an ADS token + GEMINI_API_KEY
@@ -46,9 +45,8 @@ reasoning disabled. Two methods × two models is the four runs of Table 1.
   └────────────────────┘  → the published numbers, stdlib only, seconds
 ```
 
-2A finds the papers, 2B reads them — but **2A is not a command**.
-`build_undiscussed_catalog.py` imports 2A's cross-match code and calls it, so
-one run does both. Stage 3 is independent of either.
+Stage 2 finds the papers and then reads them, in one script and one run.
+Stage 3 is independent of it.
 
 Stage 2 and stage 3 never touch the image catalogue. **If you only want to check
 the published numbers, skip to step 3 below** — it takes seconds and needs no
@@ -155,28 +153,23 @@ what the paper quotes rather than a token-price estimate.
 
 ## Step 2 — from scores to a screened catalogue
 
-This stage answers two different questions, and it helps to keep them apart:
+One script, one run. It answers two different questions in sequence, and it
+helps to keep them apart:
 
-- **2A — which papers even mention this position?** Cross-match the image
+- **Phase 1 — which papers even mention this position?** Cross-match the image
   against sky catalogues, and collect the bibliography each catalogue
   attributes to whatever object it finds there.
-- **2B — do any of those papers actually *say something* about the object?**
-  Read them and decide, because a catalogue entry is not a discussion.
+- **Phase 2 — do any of those papers actually *say something* about the
+  object?** Read them and decide, because a catalogue entry is not a
+  discussion.
 
-**One command runs both.** `build_undiscussed_catalog.py` calls 2A's
-cross-match functions itself; you do not run 2A first. It is split out below
-only because the two halves answer different questions, and because 2A is
-also runnable on its own for a different purpose.
+They are described separately below only because they answer different
+questions; there is one command, in Phase 2.
 
-### Step 2A — find the papers (runs inside 2B)
+### Phase 1 — find the papers
 
-There is no 2A command. `unidentified_objects/find_unidentified_objects.py`
-is the cross-match **library** that 2B imports and calls; the file is
-required — delete it and 2B dies on `ModuleNotFoundError` — but you never
-invoke it yourself. This section describes what happens inside the run.
-
-For each candidate image, 2A searches a 3″ circle around the position in
-three catalogues:
+For each candidate image, a 3″ circle around the position is searched in three
+catalogues:
 
 | Catalogue | What a hit means | What it yields |
 |---|---|---|
@@ -186,11 +179,10 @@ three catalogues:
 
 The SIMBAD and NED bibliographies are the point: they are how an image gets
 from "there is an object at these coordinates" to "here are the 40 papers
-that cite it". That list is the evidence 2B then judges. This is the paper's
+that cite it". That list is the evidence phase 2 judges. This is the paper's
 "we search for positional counterparts within 3″ in SIMBAD, NED, a dataset of
 galaxy mentions in astronomical papers, and the interacting-galaxy catalogue
-of O'Ryan et al. (2023)" — applied to the 138 candidates, not to the whole
-corpus.
+of O'Ryan et al. (2023)" — applied to the 138 candidates.
 
 Two choices worth knowing. Both SIMBAD and NED are queried for **every**
 image rather than stopping at the first catalogue that answers — stopping
@@ -199,17 +191,12 @@ the literature on exactly the objects most likely to have some. And one image
 can resolve to several catalogue objects within 3″ (an optical and a radio
 designation for one source), so all of their papers are pooled.
 
-The file also carries a `__main__` block that sweeps the **whole** scored
-corpus and writes `unidentified_objects.csv`, `matched_objects.csv` and the
-two bibliographies. No number in the paper comes from it. It is left in place
-because it is the same code path 2B calls, but it is not a step here.
-
 **SIMBAD and NED are live**, so a later run sees positions that have since
 been catalogued. Quote the query date alongside any count taken from them.
 
-### Step 2B — judge whether those papers discuss the object
+### Phase 2 — judge whether those papers discuss the object
 
-2A hands over a pile of papers per object. The question here is whether any of
+Phase 1 hands over a pile of papers per object. The question here is whether any of
 them says something about *that* object, or whether it only appears as row 400
 of a survey table. Being catalogued is fine; being discussed is not. This is
 the step you actually run:
@@ -237,9 +224,8 @@ Four conditions and a screening pass, at the released cut of 45
 | 5 | O'Ryan screening flags — recorded, never excluded | 131 |
 
 Condition 4 is the point, and it is deliberately weaker than "uncatalogued".
-Unlike `find_unidentified_objects.py`, SIMBAD and NED are queried here **only
-to collect papers**, never to disqualify an image — being catalogued is fine,
-being discussed is not. Six objects across five images are judged
+SIMBAD and NED are queried **only to collect papers**, never to disqualify an
+image — being catalogued is fine, being discussed is not. Six objects across five images are judged
 individually discussed; the highest-scoring is the strong lens
 `SDSS J1205+4910` at 50/50.
 
@@ -313,9 +299,8 @@ names any run it could not find rather than quietly omitting the row.
 | Table 1 — N selected, recall, precision, Expected Recall@2000, $/10k | `metrics/make_table1.py` |
 | Table 2 — tokens/image and $/10,000 images | `metrics/make_table1.py` |
 | Discussion — seed-to-seed recall spread | `metrics/make_table1.py` |
-| 2A — finding the papers a catalogue attributes to each position | `unidentified_objects/find_unidentified_objects.py` (library, not a command) |
-| 2B — the released catalogue, 138 → 131, with O'Ryan flags | `unidentified_objects/build_undiscussed_catalog.py` |
-| 2B — the ADS retrieval and the discussion classifier it calls | `literature_crossmatch/{classify_genuine_discussion,fulltext_search_classification,deep_dive_summaries}.py` |
+| the released catalogue: 3″ cross-match, discussion screen, O'Ryan flags, 138 → 131 | `unidentified_objects/build_undiscussed_catalog.py` |
+| the ADS retrieval and the discussion classifier it calls | `literature_crossmatch/{classify_genuine_discussion,fulltext_search_classification,deep_dive_summaries}.py` |
 | Appendix A — the exact prompt | `scoring/GEMINI.md` |
 
 `common/paths.py` holds every file location, anchored to itself rather than to
