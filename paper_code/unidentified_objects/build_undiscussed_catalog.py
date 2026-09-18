@@ -1,43 +1,35 @@
 """
 Build the released candidate catalogue: high-scoring cutouts that are not
-reference anomalies and that nobody has written about individually.
+reference anomalies, that no catalogue of already-recognised objects claims,
+and that no paper discusses individually.
 
-The script is self-contained: it does the catalogue cross-match itself
-(sections 2A-i to 2A-iv below) rather than importing it, because that code
-had no other caller and no purpose of its own here. Two questions in
-sequence: which papers mention an object at this position, and does any of
-them actually say something about it.
+Four conditions, applied in order:
 
-Four conditions, applied in order, then a screening pass:
-
-  1. imagescore >= MIN_SCORE in the scoring CSV (45, the released cut).
-  2. interesting == 0 - the image is not one of the AnomalyMatch anomalies
-     (those are already known, and are the labelled positives of stage 1).
-  3. No counterpart within MATCH_RADIUS_ARCSEC in the HF galaxy-mentions
-     coordinate catalogue. A hit there means a paper already resolved a name
-     to this position, so the object is discussed by construction. SIMBAD and
-     NED are queried in the same pass, but only to collect each matched
-     object's bibliography - that list is the evidence condition 4 reads.
+  1. imagescore >= MIN_SCORE (45, the released cut).
+  2. interesting == 0 - not one of the AnomalyMatch reference anomalies.
+  3. No counterpart within MATCH_RADIUS_ARCSEC in either
+       a. the HF galaxy-mentions coordinate catalogue - a hit means a paper
+          already resolved a name to this position; or
+       b. the interacting-galaxy catalogues of O'Ryan et al. (2023),
+          Zenodo 7684876 - a hit means the morphology was already recognised.
   4. No SIMBAD or NED object matched to the image is *genuinely discussed* in
      the literature.
 
-  5. Screening flags, not a condition. Every surviving image is matched at
-     MATCH_RADIUS_ARCSEC against the interacting-galaxy catalogues of
-     O'Ryan et al. (2023) (Zenodo 7684876) and the result is *recorded*.
+Condition 3 runs before condition 4 on purpose: an image dropped there costs
+no ADS quota and no LLM call.
 
 Condition 4 is the point of the exercise, and it is deliberately weaker than
 "uncatalogued". An object can sit in SIMBAD purely as row 400 of a survey
 table with no paper ever saying a word about it. Such an image stays in this
-catalogue: being catalogued is fine, being discussed is not. So unlike
-find_unidentified_objects.py, SIMBAD and NED are queried here *only to
-collect papers*, never to disqualify an image.
+catalogue: being catalogued is fine, being discussed is not. So SIMBAD and
+NED are queried here *only to collect papers*, never to disqualify an image.
 
-Two consequences for how the cross-match runs (2A-i to 2A-iv):
+Two consequences for how that cross-match runs:
 
   - Both SIMBAD and NED are queried for every surviving image, rather than
-    stopping at the first catalogue that answers. The chained version left
-    SIMBAD-matched images with no NED bibliography, which would understate
-    the literature on exactly the objects most likely to have some.
+    stopping at the first catalogue that answers. Stopping early would leave
+    SIMBAD-matched images with no NED bibliography, understating the
+    literature on exactly the objects most likely to have some.
   - An image can resolve to more than one catalogue object within the match
     radius (an optical and a radio designation for one source, say). The
     image is dropped if *any* of its objects is genuinely discussed, so what
@@ -46,38 +38,33 @@ Two consequences for how the cross-match runs (2A-i to 2A-iv):
 Images that match no catalogue object have no papers, hence no discussion,
 and are kept without an LLM call.
 
-Step 5 flags but never excludes. The released list is a screening result, not
-a claim of novelty: prior recognition of interacting morphology is exactly the
-context a reader needs, so it is recorded in the output rather than used to
-silently drop a row. The only exclusion the literature makes here is
-condition 4.
+Evidence for the discussion verdict is every paper's abstract from ADS, plus
+an ADS full-text search that returns verbatim in-body snippets - the thing
+that separates "listed in Table 3" from "we model its tidal tail in
+Section 4".
 
-Evidence for the discussion verdict is the same as stage 3's deepest pass:
-every paper's abstract from ADS, plus an ADS full-text search that returns
-verbatim in-body snippets - the thing that separates "listed in Table 3"
-from "we model its tidal tail in Section 4".
+The script is self-contained: it does the catalogue cross-match itself
+(sections 2A-i to 2A-iv below) rather than importing it.
 
-Checkpoints, all under cache/undiscussed_catalog/, let an interrupted run
-resume without re-spending API quota:
+Checkpoints under cache/undiscussed_catalog/ let an interrupted run resume
+without re-spending API quota:
     crossmatch.json     images, their matched objects, and their papers
     verdicts.csv        per-object discussion verdicts
     ned_*.csv           NED per-object and bibliography checkpoints
 The shared fulltext_hits.csv / fulltext_search_checked.txt are reused and
-extended, so objects the earlier sweep already searched cost nothing here.
+extended, so objects an earlier sweep already searched cost nothing here.
 
 Outputs:
-    released_candidates.csv               the catalogue, one row per image
+    undiscussed_catalog.csv               the released catalogue
     all_nonreference_above_threshold.csv  every image entering condition 3,
-                                          with its screening flags, including
-                                          the ones condition 4 removed
-    candidate_counts.json                 the counts quoted in the appendix
+                                          with `dropped_by` naming what
+                                          removed it (blank = released)
+    candidate_counts.json                 the counts quoted in the paper
 
 Usage:
     python build_undiscussed_catalog.py [scores.csv] [output.csv]
 
-Requires GEMINI_API_KEY and ~/.ads_api_key. Set ORYAN_CATALOGUE_DIR to the
-directory of O'Ryan catalogue CSVs; without it the run still completes and
-says that the screening columns are empty.
+Requires GEMINI_API_KEY, ~/.ads_api_key, and ORYAN_CATALOGUE_DIR.
 """
 
 import os
@@ -203,20 +190,11 @@ VERDICT_FIELDNAMES = ["object_name", "n_papers_checked", "n_name_hits",
 # count printed at the end is the diagnostic worth watching.
 CLASSIFY_VOTES = int(os.environ.get("CLASSIFY_VOTES", "3"))
 
-# The interacting sample itself, as opposed to the comparison catalogues
-# distributed alongside it in the same Zenodo record.
-INTERACTING_CATALOGUE = "interacting-catalogue.csv"
-
-ORYAN_FIELDNAMES = [
-    "oryan_interacting_match", "oryan_any_catalogue_match",
-    "oryan_catalogues", "oryan_source_ids", "nearest_oryan_arcsec",
-]
-
 OUTPUT_FIELDNAMES = [
     "filename", "imagescore", "SourceRA", "SourceDec",
     "catalogued", "simbad_name", "simbad_type", "ned_name", "ned_type",
     "redshift", "n_objects", "n_papers", "n_fulltext_hits", "discussion_checked",
-] + ORYAN_FIELDNAMES
+]
 
 
 # ── 1. CONDITIONS 1 AND 2: SCORE, AND NOT AN ANOMALYMATCH ANOMALY ──────────
@@ -789,25 +767,54 @@ def fetch_ned_bibliography(matched_ned_records, workers=NED_BIBLIO_WORKERS,
 
 # ── 2B. CONDITION 3 + PAPER COLLECTION ─────────────────────────────────────
 
+def _dropped_row(record, why):
+    """What an image condition 3 removed still knows about itself."""
+    return {
+        "filename": record["filename"],
+        "imagescore": record["imagescore"],
+        "SourceRA": record["SourceRA"],
+        "SourceDec": record["SourceDec"],
+        "dropped_by": why,
+    }
+
+
 def run_crossmatch(records):
     """
-    Apply condition 3 (drop HF matches), then query SIMBAD and NED for every
-    survivor purely to collect papers.
+    Apply condition 3 - drop images already claimed by the galaxy-mentions or
+    O'Ryan catalogues - then query SIMBAD and NED for every survivor purely to
+    collect papers.
 
-    Returns (images, papers_by_object) where each image carries its matched
-    objects, and papers_by_object maps an object name to its bibliography.
+    Condition 3 runs before the expensive part on purpose: an image dropped
+    here costs no ADS quota and no LLM call.
+
+    Returns (images, papers_by_object, dropped) where each image carries its
+    matched objects, papers_by_object maps an object name to its bibliography,
+    and dropped maps a filename to the catalogue that removed it.
     """
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    dropped = {}
 
-    # -- condition 3: HF galaxy-mentions
+    # -- condition 3a: HF galaxy-mentions. A hit means a paper already
+    #    resolved a name to this position.
     download_parquet(COORD_RESOLUTION_PARQUET_URL, COORD_RESOLUTION_PARQUET_PATH)
     download_parquet(GALAXY_MENTIONS_PARQUET_URL, GALAXY_MENTIONS_PARQUET_PATH)
     resolved = load_resolved_catalog(COORD_RESOLUTION_PARQUET_PATH)
     mentions = load_mentions_lookup(GALAXY_MENTIONS_PARQUET_PATH)
 
     survivors, hf_matched = cross_match_hf(records, resolved, mentions)
-    print(f"  condition 3  no HF counterpart: {len(survivors)} "
-          f"({len(hf_matched)} dropped as HF-matched)")
+    for r in hf_matched:
+        dropped[r["filename"]] = _dropped_row(r, "galaxy-mentions")
+    print(f"  condition 3a no galaxy-mentions counterpart: {len(survivors)} "
+          f"({len(hf_matched)} dropped)")
+
+    # -- condition 3b: the O'Ryan interacting-galaxy catalogues. A hit means
+    #    the morphology was already recognised, so the image is not a new
+    #    candidate.
+    survivors, oryan_matched = screen_oryan(survivors)
+    for r in oryan_matched:
+        dropped[r["filename"]] = _dropped_row(r, "oryan")
+    print(f"  condition 3b no O'Ryan counterpart: {len(survivors)} "
+          f"({len(oryan_matched)} dropped)")
 
     # -- SIMBAD and NED, for papers only. Every survivor goes to both.
     simbad_unmatched, simbad_matched = cross_match_simbad(survivors)
@@ -864,7 +871,7 @@ def run_crossmatch(records):
     n_pap = sum(1 for i in images if any(papers_by_object.get(o) for o in i["objects"]))
     print(f"  {n_cat}/{len(images)} images have a catalogue counterpart; "
           f"{n_pap} have at least one paper")
-    return images, papers_by_object
+    return images, papers_by_object, dropped
 
 
 # ── 3. ALIASES: EVERY NAME THE LITERATURE MIGHT USE ────────────────────────
@@ -1157,27 +1164,15 @@ def is_discussed(verdict_row):
     return str(verdict_row.get("genuinely_discussed", "")).strip().lower() == "true"
 
 
-# ── 5. SCREENING FLAGS: THE O'RYAN INTERACTING-GALAXY CATALOGUES ───────────
+# ── 5. CONDITION 3b: THE O'RYAN INTERACTING-GALAXY CATALOGUES ──────────────
 
 def load_oryan_catalogues(directory):
-    """
-    Every per-catalogue CSV in `directory`, concatenated and tagged with the
-    file it came from.
-
-    Returns (frame, names), or (None, []) when the directory holds nothing -
-    the run then completes with the screening columns empty rather than
-    failing, because the flags are context, not a condition.
-    """
+    """Every per-catalogue CSV in `directory`, concatenated. (None, []) if empty."""
     import pandas as pd
 
     paths = sorted(glob.glob(os.path.join(directory, "*.csv")))
     if not paths:
-        print(f"  no catalogue CSVs in {directory}")
-        print("  set ORYAN_CATALOGUE_DIR to the O'Ryan et al. (2023) catalogues "
-              "(Zenodo 7684876);")
-        print("  the screening columns will be left empty for this run")
         return None, []
-
     frames = []
     for path in paths:
         frame = pd.read_csv(path)
@@ -1185,10 +1180,7 @@ def load_oryan_catalogues(directory):
         if missing:
             raise SystemExit(f"{path}: missing columns {sorted(missing)}")
         frames.append(frame.assign(catalogue=os.path.basename(path)))
-
-    catalogue = pd.concat(frames, ignore_index=True)
-    print(f"  {len(paths)} catalogues, {len(catalogue):,} rows")
-    return catalogue, [os.path.basename(p) for p in paths]
+    return pd.concat(frames, ignore_index=True), [os.path.basename(p) for p in paths]
 
 
 def separation_arcsec(images, catalogue):
@@ -1199,8 +1191,6 @@ def separation_arcsec(images, catalogue):
     Positions are matched rather than identifiers, so a source is found under
     whatever designation each catalogue happens to use for it.
     """
-    import numpy as np
-
     ra1 = np.deg2rad(np.array([float(i["SourceRA"]) for i in images]))[:, None]
     dec1 = np.deg2rad(np.array([float(i["SourceDec"]) for i in images]))[:, None]
     ra2 = np.deg2rad(catalogue.RA.to_numpy())[None, :]
@@ -1210,42 +1200,31 @@ def separation_arcsec(images, catalogue):
     return np.rad2deg(2 * np.arcsin(np.sqrt(np.clip(haversine, 0, 1)))) * 3600
 
 
-def flag_oryan_matches(images, radius_arcsec=MATCH_RADIUS_ARCSEC):
+def screen_oryan(images, radius_arcsec=MATCH_RADIUS_ARCSEC):
     """
-    Add the screening columns to each image dict, in place.
+    Split `images` into (survivors, matched) against the O'Ryan catalogues.
 
-    Returns (matches_by_catalogue, n_interacting, n_any) for the counts file.
-    Every image gets the columns even when no catalogue is available, so the
-    output schema does not depend on whether the data was downloaded.
+    A match means the interacting morphology was already recognised, so the
+    image is not a new candidate and is dropped.
+
+    A missing catalogue directory stops the run. It is a missing input, not an
+    empty result, and silently releasing images the screen should have removed
+    would be worse than failing.
     """
-    for img in images:
-        img.update({k: "" for k in ORYAN_FIELDNAMES})
-
     catalogue, names = load_oryan_catalogues(ORYAN_CATALOGUE_DIR)
-    if catalogue is None or not images:
-        return {}, None, None
-
-    separation = separation_arcsec(images, catalogue)
-    matched = separation <= radius_arcsec
-    is_interacting = catalogue.catalogue.eq(INTERACTING_CATALOGUE).to_numpy()
-
-    for row, img in enumerate(images):
-        hit = matched[row]
-        img["oryan_interacting_match"] = int(bool(hit[is_interacting].any()))
-        img["oryan_any_catalogue_match"] = int(bool(hit.any()))
-        img["oryan_catalogues"] = ";".join(sorted(set(catalogue.loc[hit, "catalogue"])))
-        img["oryan_source_ids"] = ";".join(catalogue.loc[hit, "SourceID"].astype(str))
-        img["nearest_oryan_arcsec"] = round(float(separation[row].min()), 6)
-
-    n_interacting = sum(i["oryan_interacting_match"] for i in images)
-    n_any = sum(i["oryan_any_catalogue_match"] for i in images)
-    print(f"  {n_interacting} match the interacting catalogue, "
-          f"{n_any} match any catalogue (flagged, not excluded)")
-    by_catalogue = {
-        name: int(matched[:, catalogue.catalogue.eq(name).to_numpy()].any(axis=1).sum())
-        for name in names
-    }
-    return by_catalogue, n_interacting, n_any
+    if catalogue is None:
+        raise SystemExit(
+            f"No catalogue CSVs in {ORYAN_CATALOGUE_DIR}\n"
+            "Condition 3b needs the O'Ryan et al. (2023) catalogues "
+            "(Zenodo 7684876).\n"
+            "Set ORYAN_CATALOGUE_DIR to the directory holding them."
+        )
+    if not images:
+        return [], []
+    print(f"    {len(names)} O'Ryan catalogues, {len(catalogue):,} rows")
+    hit_any = (separation_arcsec(images, catalogue) <= radius_arcsec).any(axis=1)
+    return ([img for img, hit in zip(images, hit_any) if not hit],
+            [img for img, hit in zip(images, hit_any) if hit])
 
 
 # ── 6. MAIN ────────────────────────────────────────────────────────────────
@@ -1279,13 +1258,16 @@ if __name__ == "__main__":
 
     if state is not None:
         print(f"\nReusing cross-match checkpoint {CROSSMATCH_CHECKPOINT}")
-        images, papers_by_object = state["images"], state["papers_by_object"]
+        images = state["images"]
+        papers_by_object = state["papers_by_object"]
+        dropped_early = state.get("dropped_early", {})
     else:
         print("\nCross-matching...")
-        images, papers_by_object = run_crossmatch(records)
+        images, papers_by_object, dropped_early = run_crossmatch(records)
         with open(CROSSMATCH_CHECKPOINT, "w", encoding="utf-8") as f:
             json.dump({"min_score": MIN_SCORE, "images": images,
-                       "papers_by_object": papers_by_object}, f)
+                       "papers_by_object": papers_by_object,
+                       "dropped_early": dropped_early}, f)
         print(f"  checkpoint written to {CROSSMATCH_CHECKPOINT}")
 
     candidate_objects = sorted({o for i in images for o in i["objects"]})
@@ -1304,11 +1286,6 @@ if __name__ == "__main__":
     discussed = {o for o in candidate_objects
                  if o in verdicts and is_discussed(verdicts[o])}
     print(f"  {len(discussed)} of {len(with_papers)} objects are genuinely discussed")
-
-    # -- step 5: screening flags over every image, kept and dropped alike, so
-    #    the counts describe the whole selection rather than the survivors.
-    print("\nStep 5: O'Ryan interacting-galaxy screen")
-    by_catalogue, n_interacting, n_any = flag_oryan_matches(images)
 
     # -- assemble the catalogue
     rows, kept = [], []
@@ -1329,11 +1306,10 @@ if __name__ == "__main__":
             "n_papers": n_papers,
             "n_fulltext_hits": sum(len(hits.get(o, [])) for o in img["objects"]),
             "discussion_checked": 1 if n_papers else 0,
-            **{k: img[k] for k in ORYAN_FIELDNAMES},
         }
-        row["passed_discussion_screen"] = 0 if any(o in discussed for o in img["objects"]) else 1
+        row["dropped_by"] = "discussed" if any(o in discussed for o in img["objects"]) else ""
         rows.append(row)
-        if row["passed_discussion_screen"]:
+        if not row["dropped_by"]:
             kept.append({k: row[k] for k in OUTPUT_FIELDNAMES})
 
     order = lambda r: (-r["imagescore"], r["filename"])
@@ -1347,10 +1323,16 @@ if __name__ == "__main__":
             w.writerows(records)
 
     write(OUTPUT_CSV, kept, OUTPUT_FIELDNAMES)
-    write(CANDIDATES_ALL_CSV, rows, OUTPUT_FIELDNAMES + ["passed_discussion_screen"])
+    # Images condition 3 removed never reached the cross-match, so they carry
+    # only what the score CSV and the parquet knew about them.
+    rows.extend(dropped_early.values())
+    rows.sort(key=lambda r: (-int(r.get("imagescore") or 0), r["filename"]))
+    write(CANDIDATES_ALL_CSV, rows, OUTPUT_FIELDNAMES + ["dropped_by"])
 
     n_cat = sum(1 for r in kept if r["catalogued"])
-    n_dropped = len(rows) - len(kept)
+    # Count only what condition 4 removed; `rows` now also holds the images
+    # condition 3 dropped before the cross-match.
+    n_dropped = sum(1 for r in rows if r.get("dropped_by") == "discussed")
     counts = {
         "score_threshold": MIN_SCORE,
         "matching_radius_arcsec": MATCH_RADIUS_ARCSEC,
@@ -1358,7 +1340,7 @@ if __name__ == "__main__":
         "all_images_above_threshold": n_above_threshold,
         "reference_images_above_threshold": n_above_threshold - n_nonreference,
         "nonreference_above_threshold": n_nonreference,
-        "entered_discussion_screen": len(rows),
+        "entered_discussion_screen": len(images),
         "distinct_catalogue_objects": len(candidate_objects),
         "objects_with_papers": len(with_papers),
         "objects_genuinely_discussed": len(discussed),
@@ -1368,9 +1350,10 @@ if __name__ == "__main__":
         "released_without_papers": sum(1 for r in kept if not r["discussion_checked"]),
         "released_uncatalogued": len(kept) - n_cat,
         "released_catalogued_not_discussed": n_cat,
-        "oryan_interacting_matches": n_interacting,
-        "oryan_any_catalogue_matches": n_any,
-        "matches_by_catalogue": by_catalogue,
+        "dropped_by_galaxy_mentions": sum(1 for r in dropped_early.values()
+                                          if r["dropped_by"] == "galaxy-mentions"),
+        "dropped_by_oryan": sum(1 for r in dropped_early.values()
+                                if r["dropped_by"] == "oryan"),
     }
     with open(CANDIDATES_COUNTS_JSON, "w", encoding="utf-8") as f:
         json.dump(counts, f, indent=2)

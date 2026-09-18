@@ -19,13 +19,10 @@ openai            # Qwen3.5-397B-A17B, via OpenRouter's OpenAI-compatible API
 pydantic          # the structured-output schemas the models fill in
 tqdm
 
-# ── Stage 2A: find the papers (unidentified_objects/) ──────────────────────
-# Public services only, no key required.
+# ── Stage 2: the released catalogue (unidentified_objects/) ────────────────
+# Needs an ADS token at ~/.ads_api_key, GEMINI_API_KEY, and the O'Ryan
+# catalogue CSVs at ORYAN_CATALOGUE_DIR.
 pyvo              # SIMBAD and NED TAP
-
-# ── Stage 2B: judge the papers, and screen ─────────────────────────────────
-# Needs an ADS token at ~/.ads_api_key and GEMINI_API_KEY. The O'Ryan
-# screening step also reads local catalogue CSVs (ORYAN_CATALOGUE_DIR).
 requests          # the ADS API
 
 # ── Stage 3: metrics (metrics/*.py) ────────────────────────────────────────
