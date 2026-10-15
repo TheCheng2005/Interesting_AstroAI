@@ -1,0 +1,9 @@
+# Rendering both films. Versions are the ones the published videos were made with.
+# Install manim from conda-forge (it needs pango/cairo), plus ffmpeg on PATH:
+#   conda create -n manim_env -c conda-forge python=3.11 manim=0.20.1 ffmpeg
+manim==0.20.1
+moderngl==5.12.0
+numpy>=2.0
+Pillow>=10.0
+# prepare/extract_cutouts.py runs in the paper_code environment instead
+# (../requirements.txt), which has h5py.

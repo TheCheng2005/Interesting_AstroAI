@@ -1,0 +1,5 @@
+# Generated: rebuilt by prepare/, never committed
+assets/
+media/
+__pycache__/
+*.pyc

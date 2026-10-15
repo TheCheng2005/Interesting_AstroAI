@@ -15,6 +15,8 @@ comparing the AI judges against real experts and citizen-science volunteers.
 | [`weird_and_wonderful/`](weird_and_wonderful/) | Do AI judges agree with Galaxy Zoo volunteers on which subjects are "weird and wonderful"? | Galaxy Zoo: Weird and Wonderful citizen-science project |
 | [`hubble/`](hubble/) | Can AI judges triage millions of Hubble cutouts down to a tractable set of scientifically interesting candidates? | Hubble Legacy Archive cutouts |
 | [`expert_validation/`](expert_validation/) | How well do AI judgments agree with trained astronomers, and can that agreement be modeled? | Expert ratings collected on both datasets above |
+| [`paper_code/`](paper_code/) | The code behind the paper *Identifying Scientifically Interesting Galaxies with Vision-Language Models* | Hubble Legacy Archive cutouts |
+| [`paper_animation/`](paper_animation/) | 2D and 3D explainer videos of that paper ([watch](https://github.com/TheCheng2005/Interesting_AstroAI/releases/tag/paper-animation-v1)) | Built from `paper_code`'s data and results |
 
 Each folder has its own README with method details and how to reproduce the
 headline results.
